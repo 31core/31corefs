@@ -1,0 +1,16 @@
+[package]
+name = "corefs"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+name = "31corefs"
+
+[dependencies]
+
+[dependencies.uuid]
+version = "1.6.1"
+features = [
+    "v4",
+]
