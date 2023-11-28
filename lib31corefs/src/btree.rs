@@ -69,7 +69,7 @@ impl BtreeNode {
             self.push(id, ptr);
         } else {
             for (i, _) in self.offsets.iter().enumerate() {
-                if i == 0 {
+                if i == 0 && id < self.offsets[0] {
                     self.insert(0, id, ptr);
                     break;
                 } else if i < self.len() - 1 && id > self.offsets[i] && id < self.offsets[i + 1]
@@ -182,25 +182,30 @@ impl BtreeNode {
         Ok(None)
     }
     /** Remove an offset from B-Tree */
-    pub fn offset_remove<D>(&mut self, fs: &mut Filesystem, device: &mut D, id: u64) -> IOResult<()>
+    pub fn offset_remove<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        offset: u64,
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
         if self.is_internal() {
             for i in 0..self.len() {
-                if i < self.len() - 1 && id >= self.offsets[i] && id < self.offsets[i + 1]
+                if i < self.len() - 1 && offset >= self.offsets[i] && offset < self.offsets[i + 1]
                     || i == self.len() - 1
                 {
-                    let child_block = fs.get_data_block(device, self.ptrs[i]).unwrap();
+                    let child_block = fs.get_data_block(device, self.ptrs[i])?;
                     let mut child_node = Self::new(self.ptrs[i], &child_block);
-                    child_node.offset_remove(fs, device, id)?;
+                    child_node.offset_remove(fs, device, offset)?;
                     /* when child_node is empty, self.len() must be 0 */
                     if child_node.is_empty() {
                         self.remove(i);
                     } else if child_node.len() < MAX_IDS / 2 {
                         if i > 0 {
                             let previous_node_block =
-                                fs.get_data_block(device, self.ptrs[i - 1]).unwrap();
+                                fs.get_data_block(device, self.ptrs[i - 1])?;
                             let mut previous_node =
                                 Self::new(self.ptrs[i - 1], &previous_node_block);
                             /* merge this child node into previous node */
@@ -230,8 +235,7 @@ impl BtreeNode {
                                 previous_node.dump(),
                             )?;
                         } else if i < self.len() - 1 {
-                            let next_node_block =
-                                fs.get_data_block(device, self.ptrs[i + 1]).unwrap();
+                            let next_node_block = fs.get_data_block(device, self.ptrs[i + 1])?;
                             let mut next_node = Self::new(self.ptrs[i + 1], &next_node_block);
                             /* merge this child node into next node */
                             if next_node.len() + child_node.len() <= MAX_IDS {
@@ -266,7 +270,7 @@ impl BtreeNode {
         } else {
             /* find and remove */
             for i in 0..self.len() {
-                if self.offsets[i] == id {
+                if self.offsets[i] == offset {
                     self.remove(i);
                     fs.set_data_block(device, self.block_count, self.dump())?;
                     break;
@@ -298,7 +302,27 @@ impl BtreeNode {
                 {
                     let block = fs.get_data_block(device, self.ptrs[i]).unwrap();
                     let child = Self::new(offset - self.ptrs[i], &block);
-                    return child.offset_lookup(fs, device, offset);
+
+                    if let Some((block, block_offset, available_size)) =
+                        child.offset_lookup(fs, device, offset)
+                    {
+                        if i < self.len() {
+                            let next_off = *Self::new(
+                                offset - self.ptrs[i],
+                                &fs.get_data_block(device, self.ptrs[i + 1]).unwrap(),
+                            )
+                            .offsets
+                            .first()
+                            .unwrap();
+                            let available_size = std::cmp::min(
+                                available_size,
+                                next_off - self.offsets[i] - block_offset,
+                            );
+                            return Some((block, block_offset, available_size));
+                        } else {
+                            return Some((block, block_offset, available_size));
+                        }
+                    }
                 }
             }
         } else {
@@ -373,6 +397,26 @@ impl BtreeNode {
                     child_node.offset_adjust(fs, device, offset - self.offsets[i], size, add);
                 }
             }
+        }
+    }
+    /** Destroy the full B-Tree */
+    pub fn destroy<D>(&mut self, fs: &mut Filesystem, device: &mut D)
+    where
+        D: Write + Read + Seek,
+    {
+        if self.is_leaf() {
+            for i in 0..self.len() {
+                fs.release_block(self.ptrs[i]);
+            }
+        } else {
+            for i in 0..self.offsets.len() {
+                let mut child_node = Self::new(
+                    self.ptrs[i],
+                    &fs.get_data_block(device, self.ptrs[i]).unwrap(),
+                );
+                child_node.destroy(fs, device);
+            }
+            fs.release_block(self.block_count);
         }
     }
     fn is_internal(&self) -> bool {

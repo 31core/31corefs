@@ -78,6 +78,11 @@ impl Filesystem {
         let relative_inode = count % INODE_PER_GROUP as u64;
         self.groups[group as usize].set_inode(device, relative_inode, inode)
     }
+    pub fn release_inode(&mut self, inode: u64) {
+        let group = inode / INODE_PER_GROUP as u64;
+        let relative_inode = inode % INODE_PER_GROUP as u64;
+        self.groups[group as usize].release_inode(relative_inode);
+    }
     /** Allocate a data block */
     pub fn new_block(&mut self) -> Option<u64> {
         for (i, group) in self.groups.iter_mut().enumerate() {

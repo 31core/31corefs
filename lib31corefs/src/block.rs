@@ -187,6 +187,10 @@ impl BlockGroup {
 
         Ok(())
     }
+    /** Release an inode */
+    pub fn release_inode(&mut self, inode: u64) {
+        self.inode_bitmap.set_unused(inode);
+    }
     /** Allocate a data block */
     pub fn new_block(&mut self) -> Option<u64> {
         for count in 0..DATA_BLOCK_PER_GROUP as u64 {
@@ -201,6 +205,7 @@ impl BlockGroup {
         }
         None
     }
+    /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
         self.block_map[count as usize / (BLOCK_MAP_SIZE / 2)].counts
             [count as usize % (BLOCK_MAP_SIZE / 2)] -= 1;
