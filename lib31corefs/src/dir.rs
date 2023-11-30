@@ -96,7 +96,7 @@ impl Directory {
         dir_data.push(file_name.len() as u8);
         dir_data.extend(file_name.as_bytes());
 
-        crate::file::File::open_by_inode(fs, device, self.inode)?.insert(
+        crate::file::File::open_by_inode(fs, device, self.inode)?.write(
             fs,
             device,
             self.fd.size,

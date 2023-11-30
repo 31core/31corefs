@@ -193,14 +193,12 @@ impl BlockGroup {
     }
     /** Allocate a data block */
     pub fn new_block(&mut self) -> Option<u64> {
-        for count in 0..DATA_BLOCK_PER_GROUP as u64 {
-            if self.block_map[count as usize / (BLOCK_MAP_SIZE / 2)].counts
-                [count as usize % (BLOCK_MAP_SIZE / 2)]
-                == 0
-            {
-                self.block_map[count as usize / (BLOCK_MAP_SIZE / 2)].counts
-                    [count as usize % (BLOCK_MAP_SIZE / 2)] += 1;
-                return Some(count);
+        for block in 0..BLOCK_MAP_SIZE {
+            for count in 0..BLOCK_SIZE / 2 {
+                if self.block_map[block].counts[count] == 0 {
+                    self.block_map[block].counts[count] = 1;
+                    return Some((block * BLOCK_SIZE / 2 + count) as u64);
+                }
             }
         }
         None

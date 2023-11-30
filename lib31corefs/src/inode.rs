@@ -17,6 +17,7 @@ pub const INODE_SIZE: usize = 64;
  * |30   |32 |Hard links |
  * |32   |40 |Size       |
  * |40   |48 |B-Tree root|
+ * |48   |49 |B-Tree depth|
  */
 pub struct INode {
     pub permission: u16,
@@ -28,6 +29,7 @@ pub struct INode {
     pub hlinks: u16,
     pub size: u64,
     pub btree_root: u64,
+    pub btree_depth: u8,
 }
 
 impl INode {
@@ -43,6 +45,7 @@ impl INode {
             hlinks: u16::from_be_bytes(bytes[30..32].try_into().unwrap()),
             size: u64::from_be_bytes(bytes[32..40].try_into().unwrap()),
             btree_root: u64::from_be_bytes(bytes[40..48].try_into().unwrap()),
+            btree_depth: bytes[49],
         }
     }
     /** Dump to bytes */
@@ -58,6 +61,7 @@ impl INode {
         inode_bytes[30..32].copy_from_slice(&self.hlinks.to_be_bytes());
         inode_bytes[32..40].copy_from_slice(&self.size.to_be_bytes());
         inode_bytes[40..48].copy_from_slice(&self.btree_root.to_be_bytes());
+        inode_bytes[49] = self.btree_depth;
 
         inode_bytes
     }
