@@ -87,7 +87,7 @@ impl Filesystem {
     pub fn new_block(&mut self) -> Option<u64> {
         for (i, group) in self.groups.iter_mut().enumerate() {
             if let Some(count) = group.new_block() {
-                return Some(relative_to_absolute!(i as u64, count));
+                return Some(data_block_relative_to_absolute!(i as u64, count));
             }
         }
         None

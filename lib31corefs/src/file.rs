@@ -134,6 +134,7 @@ impl File {
     }
 }
 
+/** Create a file and return the inode count */
 pub fn create<D>(fs: &mut Filesystem, device: &mut D) -> Option<u64>
 where
     D: Read + Write + Seek,
@@ -149,6 +150,7 @@ where
     Some(inode_count)
 }
 
+/** Remove a file */
 pub fn remove<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
 where
     D: Read + Write + Seek,

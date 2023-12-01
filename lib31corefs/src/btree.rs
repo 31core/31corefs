@@ -102,7 +102,7 @@ impl BtreeNode {
     where
         D: Write + Read + Seek,
     {
-        if let Some((id, block)) = self.offset_insert_nontop(fs, device, offset, block, depth)? {
+        if let Some((id, block)) = self.offset_insert_internal(fs, device, offset, block, depth)? {
             let mut left = Self::default();
             for i in 0..self.len() {
                 left.push(self.offsets[i], self.ptrs[i]);
@@ -127,7 +127,7 @@ impl BtreeNode {
      * * node ID of the right node
      * * block count of the right node
      */
-    fn offset_insert_nontop<D>(
+    fn offset_insert_internal<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
@@ -156,7 +156,7 @@ impl BtreeNode {
                     let mut child_node = Self::new(self.ptrs[i], &child);
                     /* if parted into tow sub trees */
                     if let Some((id, block)) =
-                        child_node.offset_insert_nontop(fs, device, offset, block, depth - 1)?
+                        child_node.offset_insert_internal(fs, device, offset, block, depth - 1)?
                     {
                         self.add(id, block);
                         fs.set_data_block(device, self.block_count, self.dump())?;
@@ -181,6 +181,29 @@ impl BtreeNode {
     where
         D: Write + Read + Seek,
     {
+        self.offset_remove_internal(fs, device, offset, depth)?;
+        if self.len() == 1 {
+            let child = Self::new(self.ptrs[0], &fs.get_data_block(device, self.ptrs[0])?);
+            self.clear();
+            for i in 0..child.len() {
+                self.push(child.offsets[i], child.ptrs[i]);
+            }
+            fs.release_block(child.block_count);
+            fs.set_data_block(device, self.block_count, self.dump())?;
+            return Ok(depth - 1);
+        }
+        Ok(depth)
+    }
+    fn offset_remove_internal<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        offset: u64,
+        depth: usize,
+    ) -> IOResult<()>
+    where
+        D: Write + Read + Seek,
+    {
         if depth > 0 {
             for i in 0..self.len() {
                 if i < self.len() - 1 && offset >= self.offsets[i] && offset < self.offsets[i + 1]
@@ -188,7 +211,7 @@ impl BtreeNode {
                 {
                     let child_block = fs.get_data_block(device, self.ptrs[i])?;
                     let mut child_node = Self::new(self.ptrs[i], &child_block);
-                    child_node.offset_remove(fs, device, offset, depth - 1)?;
+                    child_node.offset_remove_internal(fs, device, offset, depth - 1)?;
                     /* when child_node is empty, self.len() must be 0 */
                     if child_node.is_empty() {
                         self.remove(i);
@@ -267,7 +290,7 @@ impl BtreeNode {
                 }
             }
         }
-        Ok(depth)
+        Ok(())
     }
     /** Find pointer by id
      *
@@ -315,6 +338,7 @@ impl BtreeNode {
             for i in 0..self.len() {
                 fs.release_block(self.ptrs[i]);
             }
+            fs.release_block(self.block_count);
         } else {
             for i in 0..self.offsets.len() {
                 let mut child_node = Self::new(

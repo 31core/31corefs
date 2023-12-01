@@ -12,11 +12,18 @@ pub const INODE_TABLE_SIZE: usize = 8 * BLOCK_SIZE / (BLOCK_SIZE / INODE_SIZE);
 pub const BLOCK_MAP_SIZE: usize = 32;
 
 #[macro_export]
-macro_rules! relative_to_absolute {
+macro_rules! data_block_relative_to_absolute {
     ($group_count: expr, $count: expr) => {
         1 + $group_count * GPOUP_SIZE as u64
             + (INODE_BITMAP_SIZE + BLOCK_MAP_SIZE + INODE_TABLE_SIZE) as u64
             + $count
+    };
+}
+
+#[macro_export]
+macro_rules! inode_table_relative_to_absolute {
+    ($group_count: expr, $count: expr) => {
+        1 + $group_count * GPOUP_SIZE as u64 + (INODE_BITMAP_SIZE + BLOCK_MAP_SIZE) as u64 + $count
     };
 }
 
@@ -143,9 +150,10 @@ impl BlockGroup {
         if let Some(inode) = inode {
             /* clean up the inode */
             self.inode_bitmap.set_used(inode);
-            let block_count =
-                relative_to_absolute!(self.group_count, inode / (BLOCK_SIZE / INODE_SIZE) as u64)
-                    - INODE_TABLE_SIZE as u64;
+            let block_count = inode_table_relative_to_absolute!(
+                self.group_count,
+                inode / (BLOCK_SIZE / INODE_SIZE) as u64
+            );
             let block = load_block(device, block_count)?;
             let mut inode_table_block = INodeBlock::load(block);
 
@@ -162,9 +170,10 @@ impl BlockGroup {
     where
         D: Read + Write + Seek,
     {
-        let block_count =
-            relative_to_absolute!(self.group_count, inode / (BLOCK_SIZE / INODE_SIZE) as u64)
-                - INODE_TABLE_SIZE as u64;
+        let block_count = inode_table_relative_to_absolute!(
+            self.group_count,
+            inode / (BLOCK_SIZE / INODE_SIZE) as u64
+        );
         let block = load_block(device, block_count)?;
         let inodes = INodeBlock::load(block);
 
@@ -175,10 +184,10 @@ impl BlockGroup {
     where
         D: Read + Write + Seek,
     {
-        let block_count = relative_to_absolute!(
+        let block_count = inode_table_relative_to_absolute!(
             self.group_count,
             inode_count / (BLOCK_SIZE / INODE_SIZE) as u64
-        ) - INODE_TABLE_SIZE as u64;
+        );
         let block = load_block(device, block_count)?;
         let mut inode_table_block = INodeBlock::load(block);
 
@@ -205,8 +214,8 @@ impl BlockGroup {
     }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
-        self.block_map[count as usize / (BLOCK_MAP_SIZE / 2)].counts
-            [count as usize % (BLOCK_MAP_SIZE / 2)] -= 1;
+        self.block_map[count as usize / (BLOCK_SIZE / 2)].counts
+            [count as usize % (BLOCK_SIZE / 2)] -= 1;
     }
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
     where
