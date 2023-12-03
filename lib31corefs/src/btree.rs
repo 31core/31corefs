@@ -87,7 +87,6 @@ impl BtreeNode {
             .unwrap();
         fs.set_data_block(device, self.block_count, self.dump())
             .unwrap();
-
         (*another.offsets.first().unwrap(), another.block_count)
     }
     /** Insert an offset into B-Tree */
@@ -102,6 +101,9 @@ impl BtreeNode {
     where
         D: Write + Read + Seek,
     {
+        if fs.is_multireference(self.block_count) {
+            self.block_count = fs.block_copy_out(device, self.block_count)?;
+        }
         if let Some((id, block)) = self.offset_insert_internal(fs, device, offset, block, depth)? {
             let mut left = Self::default();
             for i in 0..self.len() {
@@ -116,6 +118,7 @@ impl BtreeNode {
             self.push(*left.offsets.first().unwrap(), left_block);
             self.push(id, block);
             fs.set_data_block(device, self.block_count, self.dump())?;
+
             Ok(depth + 1)
         } else {
             Ok(depth)
@@ -140,11 +143,12 @@ impl BtreeNode {
     {
         if depth == 0 {
             self.add(offset, block);
-            fs.set_data_block(device, self.block_count, self.dump())?;
 
             /* part into two child nodes */
-            if self.len() >= MAX_IDS {
+            if self.len() > MAX_IDS {
                 return Ok(Some(self.part(fs, device)));
+            } else {
+                fs.set_data_block(device, self.block_count, self.dump())?;
             }
         } else {
             /* find child node to insert */
@@ -152,8 +156,12 @@ impl BtreeNode {
                 if i < self.len() - 1 && offset > self.offsets[i] && offset < self.offsets[i + 1]
                     || i == self.len() - 1
                 {
+                    if fs.is_multireference(self.ptrs[i]) {
+                        self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
+                    }
                     let child = fs.get_data_block(device, self.ptrs[i]).unwrap();
                     let mut child_node = Self::new(self.ptrs[i], &child);
+
                     /* if parted into tow sub trees */
                     if let Some((id, block)) =
                         child_node.offset_insert_internal(fs, device, offset, block, depth - 1)?
@@ -162,7 +170,7 @@ impl BtreeNode {
                         fs.set_data_block(device, self.block_count, self.dump())?;
                     }
 
-                    if self.len() >= MAX_IDS {
+                    if self.len() > MAX_IDS {
                         return Ok(Some(self.part(fs, device)));
                     }
                 }
@@ -181,6 +189,9 @@ impl BtreeNode {
     where
         D: Write + Read + Seek,
     {
+        if fs.is_multireference(self.block_count) {
+            self.block_count = fs.block_copy_out(device, self.block_count)?;
+        }
         self.offset_remove_internal(fs, device, offset, depth)?;
         if self.len() == 1 {
             let child = Self::new(self.ptrs[0], &fs.get_data_block(device, self.ptrs[0])?);
@@ -209,14 +220,23 @@ impl BtreeNode {
                 if i < self.len() - 1 && offset >= self.offsets[i] && offset < self.offsets[i + 1]
                     || i == self.len() - 1
                 {
+                    if fs.is_multireference(self.ptrs[i]) {
+                        self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
+                        fs.set_data_block(device, self.block_count, self.dump())?;
+                    }
                     let child_block = fs.get_data_block(device, self.ptrs[i])?;
                     let mut child_node = Self::new(self.ptrs[i], &child_block);
+
                     child_node.offset_remove_internal(fs, device, offset, depth - 1)?;
                     /* when child_node is empty, self.len() must be 0 */
                     if child_node.is_empty() {
                         self.remove(i);
                     } else if child_node.len() < MAX_IDS / 2 {
                         if i > 0 {
+                            if fs.is_multireference(self.ptrs[i - 1]) {
+                                self.ptrs[i - 1] = fs.block_copy_out(device, self.ptrs[i - 1])?;
+                                fs.set_data_block(device, self.block_count, self.dump())?;
+                            }
                             let previous_node_block =
                                 fs.get_data_block(device, self.ptrs[i - 1])?;
                             let mut previous_node =
@@ -248,6 +268,10 @@ impl BtreeNode {
                                 previous_node.dump(),
                             )?;
                         } else if i < self.len() - 1 {
+                            if fs.is_multireference(self.ptrs[i + 1]) {
+                                self.ptrs[i + 1] = fs.block_copy_out(device, self.ptrs[i + 1])?;
+                                fs.set_data_block(device, self.block_count, self.dump())?;
+                            }
                             let next_node_block = fs.get_data_block(device, self.ptrs[i + 1])?;
                             let mut next_node = Self::new(self.ptrs[i + 1], &next_node_block);
                             /* merge this child node into next node */
@@ -296,8 +320,6 @@ impl BtreeNode {
      *
      * Return:
      * 1: block count
-     * 2: offset to the block
-     * 3: available data size in the block
      */
     pub fn offset_lookup<D>(
         &self,
@@ -328,6 +350,27 @@ impl BtreeNode {
             }
         }
         None
+    }
+    /** Clone the full B-Tree */
+    pub fn clone_tree<D>(&mut self, fs: &mut Filesystem, device: &mut D, depth: usize)
+    where
+        D: Write + Read + Seek,
+    {
+        if depth == 0 {
+            for i in 0..self.len() {
+                fs.clone_block(self.ptrs[i]);
+            }
+            fs.clone_block(self.block_count);
+        } else {
+            for i in 0..self.offsets.len() {
+                let mut child_node = Self::new(
+                    self.ptrs[i],
+                    &fs.get_data_block(device, self.ptrs[i]).unwrap(),
+                );
+                child_node.clone_tree(fs, device, depth - 1);
+            }
+            fs.clone_block(self.block_count);
+        }
     }
     /** Destroy the full B-Tree */
     pub fn destroy<D>(&mut self, fs: &mut Filesystem, device: &mut D, depth: usize)

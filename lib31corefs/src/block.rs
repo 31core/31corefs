@@ -206,16 +206,23 @@ impl BlockGroup {
             for count in 0..BLOCK_SIZE / 2 {
                 if self.block_map[block].counts[count] == 0 {
                     self.block_map[block].counts[count] = 1;
-                    return Some((block * BLOCK_SIZE / 2 + count) as u64);
+                    return Some((block * (BLOCK_SIZE / 2) + count) as u64);
                 }
             }
         }
         None
     }
+    /** Clone a data block */
+    pub fn clone_block(&mut self, count: u64) {
+        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
+        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
+        self.block_map[block].counts[count] += 1;
+    }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
-        self.block_map[count as usize / (BLOCK_SIZE / 2)].counts
-            [count as usize % (BLOCK_SIZE / 2)] -= 1;
+        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
+        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
+        self.block_map[block].counts[count] -= 1;
     }
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
     where

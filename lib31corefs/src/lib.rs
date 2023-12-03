@@ -25,6 +25,7 @@ impl Filesystem {
         let mut fs = Self::default();
         let groups_count = block_size / block::GPOUP_SIZE;
         fs.sb.groups = groups_count as u64;
+        fs.sb.uuid = *uuid::Uuid::new_v4().as_bytes();
         fs.groups = vec![block::BlockGroup::default(); groups_count];
 
         for (i, group) in fs.groups.iter_mut().enumerate() {
@@ -78,6 +79,7 @@ impl Filesystem {
         let relative_inode = count % INODE_PER_GROUP as u64;
         self.groups[group as usize].set_inode(device, relative_inode, inode)
     }
+    /** Release an inode */
     pub fn release_inode(&mut self, inode: u64) {
         let group = inode / INODE_PER_GROUP as u64;
         let relative_inode = inode % INODE_PER_GROUP as u64;
@@ -92,13 +94,31 @@ impl Filesystem {
         }
         None
     }
+    /** Copy out a mutiple referenced data block */
+    pub fn block_copy_out<D>(&mut self, device: &mut D, count: u64) -> IOResult<u64>
+    where
+        D: Read + Write + Seek,
+    {
+        let block = self.get_data_block(device, count)?;
+        let new_block = self.new_block().unwrap();
+        self.set_data_block(device, new_block, block)?;
+
+        self.release_block(count);
+        Ok(new_block)
+    }
+    /** Clone a data block */
+    pub fn clone_block(&mut self, count: u64) {
+        let group = (count as usize - 1) / GPOUP_SIZE;
+        self.groups[group].clone_block((count - 1) % GPOUP_SIZE as u64);
+    }
+    /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
         let group = (count as usize - 1) / GPOUP_SIZE;
         self.groups[group].release_block((count - 1) % GPOUP_SIZE as u64);
     }
     /** Load data block */
     pub fn set_data_block<D>(
-        &self,
+        &mut self,
         device: &mut D,
         count: u64,
         block: [u8; BLOCK_SIZE],
@@ -110,6 +130,13 @@ impl Filesystem {
         device.write_all(&block)?;
         Ok(())
     }
+    pub fn is_multireference(&self, count: u64) -> bool {
+        let group = (count as usize - 1) / GPOUP_SIZE;
+        let relative_count = (count as usize - 1) % GPOUP_SIZE;
+        self.groups[group].block_map[relative_count / (BLOCK_SIZE / 2)].counts
+            [relative_count % (BLOCK_SIZE / 2)]
+            > 1
+    }
     /** Dump data block */
     pub fn get_data_block<D>(&self, device: &mut D, count: u64) -> IOResult<[u8; BLOCK_SIZE]>
     where
@@ -120,6 +147,7 @@ impl Filesystem {
         device.read_exact(&mut block)?;
         Ok(block)
     }
+    /** Synchronize meta data to disk */
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
     where
         D: Read + Write + Seek,

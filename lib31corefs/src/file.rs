@@ -48,7 +48,25 @@ impl File {
                 data_block[block_offset as usize..block_offset as usize + written_size]
                     .copy_from_slice(&data[..written_size]);
 
-                fs.set_data_block(device, block, data_block)?;
+                if fs.is_multireference(block) {
+                    let new_block = fs.block_copy_out(device, block)?;
+                    self.btree_root.offset_remove(
+                        fs,
+                        device,
+                        block_count,
+                        self.fd.btree_depth as usize,
+                    )?;
+                    self.btree_root.offset_insert(
+                        fs,
+                        device,
+                        block_count,
+                        new_block,
+                        self.fd.btree_depth as usize,
+                    )?;
+                    fs.set_data_block(device, new_block, data_block)?;
+                } else {
+                    fs.set_data_block(device, block, data_block)?;
+                }
 
                 self.fd.size += written_size as u64;
 
@@ -78,7 +96,7 @@ impl File {
         fs.set_inode(device, self.inode, self.fd)?;
         Ok(())
     }
-
+    /** Read from file */
     pub fn read<D>(
         &self,
         fs: &mut Filesystem,
@@ -103,8 +121,8 @@ impl File {
             {
                 let block = fs.get_data_block(device, block)?;
                 let written_size = std::cmp::min(size as usize, BLOCK_SIZE - block_offset as usize);
-                data[..written_size as usize].copy_from_slice(
-                    &block[block_offset as usize..block_offset as usize + written_size as usize],
+                data[..written_size].copy_from_slice(
+                    &block[block_offset as usize..block_offset as usize + written_size],
                 );
                 if written_size < size as usize {
                     offset += written_size as u64;
@@ -155,13 +173,39 @@ pub fn remove<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IORes
 where
     D: Read + Write + Seek,
 {
+    let mut inode = fs.get_inode(device, inode_count).unwrap();
+
+    if inode.hlinks > 0 {
+        inode.hlinks -= 1;
+        fs.set_inode(device, inode_count, inode)?;
+    } else {
+        let mut btree_root = BtreeNode::new(
+            inode.btree_root,
+            &fs.get_data_block(device, inode.btree_root)?,
+        );
+
+        btree_root.destroy(fs, device, inode.btree_depth as usize);
+        fs.release_inode(inode_count);
+    }
+    Ok(())
+}
+
+/** Copy a file */
+pub fn copy<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<u64>
+where
+    D: Read + Write + Seek,
+{
     let inode = fs.get_inode(device, inode_count).unwrap();
+    let new_inode = fs.new_inode(device).unwrap();
+    let mut new = fs.get_inode(device, new_inode).unwrap();
+
     let mut btree_root = BtreeNode::new(
         inode.btree_root,
         &fs.get_data_block(device, inode.btree_root)?,
     );
-
-    btree_root.destroy(fs, device, inode.btree_depth as usize);
-    fs.release_inode(inode_count);
-    Ok(())
+    btree_root.clone_tree(fs, device, inode.btree_depth as usize);
+    new.btree_root = inode.btree_root;
+    new.btree_depth = inode.btree_depth;
+    fs.set_inode(device, new_inode, new)?;
+    Ok(new_inode)
 }

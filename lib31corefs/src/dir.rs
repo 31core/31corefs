@@ -86,4 +86,21 @@ impl Directory {
 
         Ok(())
     }
+    /** Create a hard link into directory */
+    pub fn add_hard_link<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        inode: u64,
+        file_name: &str,
+    ) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let mut fd = fs.get_inode(device, inode)?;
+        fd.hlinks += 1;
+        fs.set_inode(device, inode, fd)?;
+        self.add_file(fs, device, file_name, inode)?;
+        Ok(())
+    }
 }
