@@ -1,5 +1,8 @@
 pub const INODE_SIZE: usize = 64;
 
+pub const ACL_DIRECTORY: u16 = 1 << 15;
+pub const ACL_SYBMOLLINK: u16 = 1 << 14;
+
 #[derive(Default, Debug, Clone, Copy)]
 /**
  * INode
@@ -64,5 +67,8 @@ impl INode {
         inode_bytes[49] = self.btree_depth;
 
         inode_bytes
+    }
+    pub fn is_dir(&self) -> bool {
+        (self.permission & ACL_DIRECTORY) != 0
     }
 }

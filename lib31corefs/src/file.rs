@@ -12,6 +12,24 @@ pub struct File {
 }
 
 impl File {
+    pub fn from_inode<D>(
+        fs: &mut Filesystem,
+        device: &mut D,
+        inode_count: u64,
+        inode: INode,
+    ) -> IOResult<Self>
+    where
+        D: Read + Write + Seek,
+    {
+        Ok(Self {
+            fd: inode,
+            inode: inode_count,
+            btree_root: BtreeNode::new(
+                inode.btree_root,
+                &fs.get_data_block(device, inode.btree_root)?,
+            ),
+        })
+    }
     pub fn open_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode: u64) -> IOResult<Self>
     where
         D: Read + Write + Seek,

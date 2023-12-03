@@ -32,7 +32,7 @@ impl Filesystem {
             group.group_count = i as u64;
         }
 
-        fs.sb.root_inode = file::create(&mut fs, device).unwrap();
+        fs.sb.root_inode = dir::create(&mut fs, device).unwrap();
 
         fs
     }

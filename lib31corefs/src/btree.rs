@@ -167,11 +167,12 @@ impl BtreeNode {
                         child_node.offset_insert_internal(fs, device, offset, block, depth - 1)?
                     {
                         self.add(id, block);
-                        fs.set_data_block(device, self.block_count, self.dump())?;
                     }
 
                     if self.len() > MAX_IDS {
                         return Ok(Some(self.part(fs, device)));
+                    } else {
+                        fs.set_data_block(device, self.block_count, self.dump())?;
                     }
                 }
             }

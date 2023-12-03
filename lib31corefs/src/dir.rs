@@ -1,4 +1,5 @@
 use crate::file::File;
+use crate::inode::ACL_DIRECTORY;
 use crate::Filesystem;
 use std::collections::HashMap;
 use std::io::{Read, Result as IOResult, Seek, Write};
@@ -8,7 +9,7 @@ pub struct Directory {
 }
 
 impl Directory {
-    pub fn open<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> Self
+    pub fn open<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
@@ -21,17 +22,17 @@ impl Directory {
 
         for file in path {
             let dirs = dir.list_dir(fs, device).unwrap();
+            let inode_count = *dirs.get(&file.to_string_lossy().to_string()).unwrap();
+            let inode = fs.get_inode(device, inode_count)?;
+            if !inode.is_dir() {
+                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            }
             dir = Self {
-                fd: File::open_by_inode(
-                    fs,
-                    device,
-                    *dirs.get(&file.to_string_lossy().to_string()).unwrap(),
-                )
-                .unwrap(),
+                fd: File::from_inode(fs, device, inode_count, inode)?,
             };
         }
 
-        dir
+        Ok(dir)
     }
     pub fn list_dir<D>(&self, fs: &mut Filesystem, device: &mut D) -> IOResult<HashMap<String, u64>>
     where
@@ -102,5 +103,20 @@ impl Directory {
         fs.set_inode(device, inode, fd)?;
         self.add_file(fs, device, file_name, inode)?;
         Ok(())
+    }
+}
+
+/** Create a directory and return the inode count */
+pub fn create<D>(fs: &mut Filesystem, device: &mut D) -> Option<u64>
+where
+    D: Read + Write + Seek,
+{
+    if let Some(inode_count) = crate::file::create(fs, device) {
+        let mut inode = fs.get_inode(device, inode_count).unwrap();
+        inode.permission |= ACL_DIRECTORY;
+        fs.set_inode(device, inode_count, inode).unwrap();
+        Some(inode_count)
+    } else {
+        None
     }
 }
