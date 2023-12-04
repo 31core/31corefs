@@ -179,6 +179,62 @@ impl BtreeNode {
         }
         Ok(None)
     }
+    /** Modify an offset from B-Tree */
+    pub fn offset_modify<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        offset: u64,
+        block: u64,
+        depth: usize,
+    ) -> IOResult<usize>
+    where
+        D: Write + Read + Seek,
+    {
+        if fs.is_multireference(self.block_count) {
+            self.block_count = fs.block_copy_out(device, self.block_count)?;
+        }
+        self.offset_modify_internal(fs, device, offset, block, depth)?;
+        Ok(depth)
+    }
+    fn offset_modify_internal<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        offset: u64,
+        block: u64,
+        depth: usize,
+    ) -> IOResult<()>
+    where
+        D: Write + Read + Seek,
+    {
+        if depth == 0 {
+            /* find and modify */
+            for i in 0..self.len() {
+                if self.offsets[i] == offset {
+                    self.ptrs[i] = block;
+                    fs.set_data_block(device, self.block_count, self.dump())?;
+                    break;
+                }
+            }
+        } else {
+            for i in 0..self.len() {
+                if i < self.len() - 1 && offset >= self.offsets[i] && offset < self.offsets[i + 1]
+                    || i == self.len() - 1
+                {
+                    if fs.is_multireference(self.ptrs[i]) {
+                        self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
+                        fs.set_data_block(device, self.block_count, self.dump())?;
+                    }
+                    let child_block = fs.get_data_block(device, self.ptrs[i])?;
+                    let mut child_node = Self::new(self.ptrs[i], &child_block);
+
+                    child_node.offset_modify_internal(fs, device, offset, block, depth - 1)?;
+                }
+            }
+        }
+        Ok(())
+    }
     /** Remove an offset from B-Tree */
     pub fn offset_remove<D>(
         &mut self,

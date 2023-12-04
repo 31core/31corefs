@@ -148,7 +148,7 @@ impl Filesystem {
         Ok(block)
     }
     /** Synchronize meta data to disk */
-    pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
+    pub fn sync_meta_data<D>(&mut self, device: &mut D) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {

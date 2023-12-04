@@ -87,6 +87,41 @@ impl Directory {
 
         Ok(())
     }
+    /** Remove a file into directory */
+    pub fn remove_file<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        file_name: &str,
+    ) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let mut dir_data = vec![0; self.fd.get_size() as usize];
+        self.fd
+            .read(fs, device, 0, &mut dir_data, self.fd.get_size())?;
+
+        let mut offset = 0;
+        while offset < self.fd.get_size() as usize {
+            offset += 8;
+            let str_len = dir_data[offset] as usize;
+            offset += 1;
+            let this_file_name =
+                String::from_utf8_lossy(&dir_data[offset..offset + str_len]).to_string();
+            offset += str_len;
+
+            if this_file_name == file_name {
+                for _ in 0..str_len + 8 + 1 {
+                    dir_data.remove(offset - str_len - 8 - 1);
+                }
+                break;
+            }
+        }
+        self.fd.write(fs, device, 0, &dir_data)?;
+        self.fd.truncate(fs, device, dir_data.len() as u64)?;
+
+        Ok(())
+    }
     /** Create a hard link into directory */
     pub fn add_hard_link<D>(
         &mut self,
