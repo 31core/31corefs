@@ -2,7 +2,7 @@ use crate::file::File;
 use crate::inode::ACL_DIRECTORY;
 use crate::Filesystem;
 use std::collections::HashMap;
-use std::io::{Read, Result as IOResult, Seek, Write};
+use std::io::{Error, ErrorKind, Read, Result as IOResult, Seek, Write};
 
 pub struct Directory {
     fd: File,
@@ -153,5 +153,22 @@ where
         Some(inode_count)
     } else {
         None
+    }
+}
+
+/** Remove a directory */
+pub fn remove<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
+where
+    D: Read + Write + Seek,
+{
+    let inode = fs.get_inode(device, inode_count)?;
+    if inode.size > 0 {
+        Err(Error::new(
+            ErrorKind::PermissionDenied,
+            "Directory isn't empty",
+        ))
+    } else {
+        crate::file::remove(fs, device, inode_count)?;
+        Ok(())
     }
 }

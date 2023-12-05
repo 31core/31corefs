@@ -1,7 +1,7 @@
 pub const INODE_SIZE: usize = 64;
 
 pub const ACL_DIRECTORY: u16 = 1 << 15;
-pub const ACL_SYBMOLLINK: u16 = 1 << 14;
+pub const ACL_SYMBOLLINK: u16 = 1 << 14;
 
 #[derive(Default, Debug, Clone, Copy)]
 /**
@@ -70,5 +70,11 @@ impl INode {
     }
     pub fn is_dir(&self) -> bool {
         (self.permission & ACL_DIRECTORY) != 0
+    }
+    pub fn is_symlink(&self) -> bool {
+        (self.permission & ACL_SYMBOLLINK) != 0
+    }
+    pub fn is_file(&self) -> bool {
+        !self.is_dir() && !self.is_symlink()
     }
 }

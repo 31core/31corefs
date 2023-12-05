@@ -1,14 +1,14 @@
 use crate::inode::*;
-use std::io::{Read, Result as IOResult, Seek, SeekFrom, Write};
+use std::io::{Error, ErrorKind, Read, Result as IOResult, Seek, SeekFrom, Write};
 
 pub const GPOUP_SIZE: usize =
     INODE_BITMAP_SIZE + BLOCK_MAP_SIZE + INODE_TABLE_SIZE + DATA_BLOCK_PER_GROUP;
 
 pub const BLOCK_SIZE: usize = 4096;
-pub const INODE_PER_GROUP: usize = BLOCK_MAP_SIZE * BLOCK_SIZE / 2;
-pub const DATA_BLOCK_PER_GROUP: usize = 8 * BLOCK_SIZE;
+pub const INODE_PER_GROUP: usize = 8 * INODE_BITMAP_SIZE * BLOCK_SIZE;
+pub const DATA_BLOCK_PER_GROUP: usize = BLOCK_MAP_SIZE * (BLOCK_SIZE / 2);
 pub const INODE_BITMAP_SIZE: usize = 1;
-pub const INODE_TABLE_SIZE: usize = 8 * BLOCK_SIZE / (BLOCK_SIZE / INODE_SIZE);
+pub const INODE_TABLE_SIZE: usize = 8 * INODE_BITMAP_SIZE * BLOCK_SIZE / (BLOCK_SIZE / INODE_SIZE);
 pub const BLOCK_MAP_SIZE: usize = 32;
 
 #[macro_export]
@@ -162,7 +162,7 @@ impl BlockGroup {
             inode_table_block.sync(block_count, device)?;
             Ok(inode)
         } else {
-            Err(std::io::Error::new(std::io::ErrorKind::Other, ""))
+            Err(Error::new(ErrorKind::Other, "No available inode"))
         }
     }
     /** Get an inode */
