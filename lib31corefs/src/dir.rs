@@ -1,6 +1,7 @@
 use crate::file::File;
 use crate::inode::ACL_DIRECTORY;
 use crate::Filesystem;
+use crate::{base_name, dir_name};
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read, Result as IOResult, Seek, Write};
 
@@ -9,6 +10,20 @@ pub struct Directory {
 }
 
 impl Directory {
+    /** Create a directory */
+    pub fn create<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    where
+        D: Read + Write + Seek,
+    {
+        let inode_count = create(fs, device).unwrap();
+
+        let mut dir = Directory::open(fs, device, &dir_name!(path))?;
+        dir.add_file(fs, device, &base_name!(path), inode_count)?;
+
+        Ok(Self {
+            fd: File::open_by_inode(fs, device, inode_count)?,
+        })
+    }
     pub fn open<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
     where
         D: Read + Write + Seek,
@@ -24,8 +39,12 @@ impl Directory {
             let dirs = dir.list_dir(fs, device).unwrap();
             let inode_count = *dirs.get(&file.to_string_lossy().to_string()).unwrap();
             let inode = fs.get_inode(device, inode_count)?;
-            if !inode.is_dir() {
-                return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+            if inode.is_symlink() {
+                let symlink = File::open_by_inode(fs, device, inode_count)?;
+                let original_path = symlink.read_link(fs, device)?;
+                return Self::open(fs, device, &original_path);
+            } else if !inode.is_dir() {
+                return Err(Error::from(ErrorKind::PermissionDenied));
             }
             dir = Self {
                 fd: File::from_inode(fs, device, inode_count, inode)?,
@@ -139,6 +158,15 @@ impl Directory {
         self.add_file(fs, device, file_name, inode)?;
         Ok(())
     }
+    /** Remove a directory */
+    pub fn remove<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let fd = Self::open(fs, device, path)?;
+        remove_by_inode(fs, device, fd.fd.get_inode())?;
+        Ok(())
+    }
 }
 
 /** Create a directory and return the inode count */
@@ -157,7 +185,7 @@ where
 }
 
 /** Remove a directory */
-pub fn remove<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
+pub fn remove_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
 where
     D: Read + Write + Seek,
 {
@@ -168,7 +196,7 @@ where
             "Directory isn't empty",
         ))
     } else {
-        crate::file::remove(fs, device, inode_count)?;
+        crate::file::remove_by_inode(fs, device, inode_count)?;
         Ok(())
     }
 }

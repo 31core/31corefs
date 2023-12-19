@@ -1,9 +1,33 @@
 use crate::block::*;
 use crate::btree::BtreeNode;
-use crate::inode::INode;
+use crate::dir::Directory;
+use crate::inode::{INode, ACL_SYMBOLLINK};
 use crate::Filesystem;
 
-use std::io::{Read, Result as IOResult, Seek, Write};
+use std::io::{Error, ErrorKind, Result as IOResult};
+use std::io::{Read, Seek, Write};
+
+#[macro_export]
+macro_rules! dir_name {
+    ($path: expr) => {
+        std::path::Path::new($path)
+            .parent()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    };
+}
+
+#[macro_export]
+macro_rules! base_name {
+    ($path: expr) => {
+        std::path::Path::new($path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    };
+}
 
 pub struct File {
     inode: INode,
@@ -12,6 +36,35 @@ pub struct File {
 }
 
 impl File {
+    /** Create a file */
+    pub fn create<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    where
+        D: Read + Write + Seek,
+    {
+        let inode_count = create(fs, device).unwrap();
+
+        let mut dir = Directory::open(fs, device, &dir_name!(path))?;
+        dir.add_file(fs, device, &base_name!(path), inode_count)?;
+
+        Self::open_by_inode(fs, device, inode_count)
+    }
+    /** Create a symbol link */
+    pub fn create_symlink<D>(
+        fs: &mut Filesystem,
+        device: &mut D,
+        path: &str,
+        point_to: &str,
+    ) -> IOResult<Self>
+    where
+        D: Read + Write + Seek,
+    {
+        let inode_count = create_symlink(fs, device, point_to).unwrap();
+
+        let mut dir = Directory::open(fs, device, &dir_name!(path))?;
+        dir.add_file(fs, device, &base_name!(path), inode_count)?;
+
+        Self::open_by_inode(fs, device, inode_count)
+    }
     pub fn from_inode<D>(
         fs: &mut Filesystem,
         device: &mut D,
@@ -29,6 +82,25 @@ impl File {
                 &fs.get_data_block(device, inode.btree_root)?,
             ),
         })
+    }
+    /** Open file by absolute path */
+    pub fn open<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    where
+        D: Read + Write + Seek,
+    {
+        let inode_count = *Directory::open(fs, device, &dir_name!(path))?
+            .list_dir(fs, device)?
+            .get(&base_name!(path))
+            .unwrap();
+
+        let inode = fs.get_inode(device, inode_count)?;
+
+        if inode.is_symlink() {
+            let path = Self::from_inode(fs, device, inode_count, inode)?.read_link(fs, device)?;
+            Self::open(fs, device, &path)
+        } else {
+            Self::open_by_inode(fs, device, inode_count)
+        }
     }
     pub fn open_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<Self>
     where
@@ -206,6 +278,30 @@ impl File {
     pub fn get_size(&self) -> u64 {
         self.inode.size
     }
+    pub fn get_inode(&self) -> u64 {
+        self.inode_count
+    }
+    /** Read symbol link */
+    pub fn read_link<D>(&self, fs: &mut Filesystem, device: &mut D) -> IOResult<String>
+    where
+        D: Read + Write + Seek,
+    {
+        if !self.inode.is_symlink() {
+            return Err(Error::new(ErrorKind::PermissionDenied, "Not a symbol link"));
+        }
+        let mut path = vec![0; self.get_size() as usize];
+        self.read(fs, device, 0, &mut path, self.get_size())?;
+        Ok(String::from_utf8_lossy(&path).to_string())
+    }
+    /** Remove a file */
+    pub fn remove<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let fd = Self::open(fs, device, path)?;
+        remove_by_inode(fs, device, fd.inode_count)?;
+        Ok(())
+    }
 }
 
 /** Create a file and return the inode count */
@@ -224,8 +320,22 @@ where
     Some(inode_count)
 }
 
+/** Create a symbol link and return the inode count */
+pub fn create_symlink<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<u64>
+where
+    D: Read + Write + Seek,
+{
+    let inode_count = create(fs, device).unwrap();
+    File::open_by_inode(fs, device, inode_count)?.write(fs, device, 0, path.as_bytes())?;
+    let mut inode = fs.get_inode(device, inode_count)?;
+    inode.permission |= ACL_SYMBOLLINK;
+    fs.set_inode(device, inode_count, inode)?;
+
+    Ok(inode_count)
+}
+
 /** Remove a file */
-pub fn remove<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
+pub fn remove_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
 where
     D: Read + Write + Seek,
 {
@@ -247,7 +357,7 @@ where
 }
 
 /** Copy a file */
-pub fn copy<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<u64>
+pub fn copy_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
