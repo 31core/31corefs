@@ -1,22 +1,16 @@
 use crate::inode::*;
 use std::io::{Error, ErrorKind, Read, Result as IOResult, Seek, SeekFrom, Write};
 
-pub const GPOUP_SIZE: usize =
-    INODE_BITMAP_SIZE + BLOCK_MAP_SIZE + INODE_TABLE_SIZE + DATA_BLOCK_PER_GROUP;
+pub const GPOUP_SIZE: usize = BLOCK_MAP_SIZE + DATA_BLOCK_PER_GROUP;
 
 pub const BLOCK_SIZE: usize = 4096;
-pub const INODE_PER_GROUP: usize = 8 * INODE_BITMAP_SIZE * BLOCK_SIZE;
 pub const DATA_BLOCK_PER_GROUP: usize = BLOCK_MAP_SIZE * (BLOCK_SIZE / 2);
-pub const INODE_BITMAP_SIZE: usize = 1;
-pub const INODE_TABLE_SIZE: usize = 8 * INODE_BITMAP_SIZE * BLOCK_SIZE / (BLOCK_SIZE / INODE_SIZE);
 pub const BLOCK_MAP_SIZE: usize = 32;
 
 #[macro_export]
 macro_rules! data_block_relative_to_absolute {
     ($group_count: expr, $count: expr) => {
-        1 + $group_count * GPOUP_SIZE as u64
-            + (INODE_BITMAP_SIZE + BLOCK_MAP_SIZE + INODE_TABLE_SIZE) as u64
-            + $count
+        1 + $group_count * GPOUP_SIZE as u64 + BLOCK_MAP_SIZE as u64 + $count
     };
 }
 
@@ -38,12 +32,13 @@ where
     Ok(block)
 }
 
-pub trait Block {
+pub trait Block: Default {
     /** Load from bytes */
     fn load(bytes: [u8; BLOCK_SIZE]) -> Self;
     /** Dump to bytes */
     fn dump(&self) -> [u8; BLOCK_SIZE];
-    fn sync<D>(&mut self, block_count: u64, device: &mut D) -> IOResult<()>
+    /** Synchronize to device */
+    fn sync<D>(&mut self, device: &mut D, block_count: u64) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
@@ -51,12 +46,19 @@ pub trait Block {
         device.write_all(&self.dump())?;
         Ok(())
     }
+    /** Allocate and initialize an empty block on device */
+    fn allocate_on_block<D>(fs: &mut crate::Filesystem, device: &mut D) -> IOResult<u64>
+    where
+        D: Write + Read + Seek,
+    {
+        let block_count = fs.new_block()?;
+        Self::default().sync(device, block_count)?;
+        Ok(block_count)
+    }
 }
 
 #[derive(Debug, Clone)]
 /**
- * Super block
- *
  * # Data structure
  *
  * |Start|End|Description|
@@ -66,21 +68,34 @@ pub trait Block {
  * |5    |13 |Count of groups|
  * |13   |29 |UUID       |
  * |29   |285|Label      |
+ * |285  |293|Total blocks|
+ * |293  |301|Used blocks|
+ * |301  |309|Real used blocks|
+ * |309  |317|Subvolume block|
+ * |317  |325|Default subvolume|
 */
 pub struct SuperBlock {
     pub groups: u64,
-    pub root_inode: u64,
     pub uuid: [u8; 16],
     pub label: [u8; 256],
+    pub total_blocks: u64,
+    pub used_blocks: u64,
+    pub real_used_blocks: u64,
+    pub default_subvol: u64,
+    pub subvol_mgr: u64,
 }
 
 impl Default for SuperBlock {
     fn default() -> Self {
         Self {
             groups: 0,
-            root_inode: 0,
             uuid: [0; 16],
             label: [0; 256],
+            total_blocks: 0,
+            used_blocks: 0,
+            real_used_blocks: 0,
+            subvol_mgr: 0,
+            default_subvol: 0,
         }
     }
 }
@@ -89,9 +104,13 @@ impl Block for SuperBlock {
     fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
         Self {
             groups: u64::from_be_bytes(bytes[5..13].try_into().unwrap()),
-            root_inode: u64::from_be_bytes(bytes[13..21].try_into().unwrap()),
-            uuid: bytes[21..37].try_into().unwrap(),
-            label: bytes[37..293].try_into().unwrap(),
+            uuid: bytes[13..29].try_into().unwrap(),
+            label: bytes[29..285].try_into().unwrap(),
+            total_blocks: u64::from_be_bytes(bytes[285..293].try_into().unwrap()),
+            used_blocks: u64::from_be_bytes(bytes[293..301].try_into().unwrap()),
+            real_used_blocks: u64::from_be_bytes(bytes[301..309].try_into().unwrap()),
+            subvol_mgr: u64::from_be_bytes(bytes[309..317].try_into().unwrap()),
+            default_subvol: u64::from_be_bytes(bytes[317..325].try_into().unwrap()),
         }
     }
     fn dump(&self) -> [u8; BLOCK_SIZE] {
@@ -100,9 +119,13 @@ impl Block for SuperBlock {
         bytes[0..4].copy_from_slice(&crate::FS_MAGIC_HEADER);
         bytes[4] = crate::FS_VERSION;
         bytes[5..13].copy_from_slice(&self.groups.to_be_bytes());
-        bytes[13..21].copy_from_slice(&self.root_inode.to_be_bytes());
-        bytes[21..37].copy_from_slice(&self.uuid);
-        bytes[37..293].copy_from_slice(&self.label);
+        bytes[13..29].copy_from_slice(&self.uuid);
+        bytes[29..285].copy_from_slice(&self.label);
+        bytes[285..293].copy_from_slice(&self.total_blocks.to_be_bytes());
+        bytes[293..301].copy_from_slice(&self.used_blocks.to_be_bytes());
+        bytes[301..309].copy_from_slice(&self.real_used_blocks.to_be_bytes());
+        bytes[309..317].copy_from_slice(&self.subvol_mgr.to_be_bytes());
+        bytes[317..325].copy_from_slice(&self.default_subvol.to_be_bytes());
 
         bytes
     }
@@ -118,7 +141,6 @@ impl SuperBlock {
 #[derive(Default, Debug, Clone)]
 pub struct BlockGroup {
     pub group_count: u64,
-    pub inode_bitmap: BitmapBlock,
     pub block_map: [BlockMapBlock; BLOCK_MAP_SIZE],
 }
 
@@ -127,90 +149,26 @@ impl BlockGroup {
     where
         D: Read + Write + Seek,
     {
-        self.inode_bitmap = BitmapBlock::load(load_block(
-            device,
-            GPOUP_SIZE as u64 * self.group_count + 1,
-        )?);
-
         for i in 0..BLOCK_MAP_SIZE as u64 {
             self.block_map[i as usize] = BlockMapBlock::load(load_block(
                 device,
-                GPOUP_SIZE as u64 * self.group_count + 2 + i,
+                GPOUP_SIZE as u64 * self.group_count + 1 + i,
             )?);
         }
 
         Ok(())
     }
-    /** Allocate an inode */
-    pub fn new_inode<D>(&mut self, device: &mut D) -> IOResult<u64>
-    where
-        D: Read + Write + Seek,
-    {
-        let inode = self.inode_bitmap.find_unused();
-        if let Some(inode) = inode {
-            /* clean up the inode */
-            self.inode_bitmap.set_used(inode);
-            let block_count = inode_table_relative_to_absolute!(
-                self.group_count,
-                inode / (BLOCK_SIZE / INODE_SIZE) as u64
-            );
-            let block = load_block(device, block_count)?;
-            let mut inode_table_block = INodeBlock::load(block);
-
-            inode_table_block.inodes[(inode % (BLOCK_SIZE / INODE_SIZE) as u64) as usize] =
-                INode::default();
-            inode_table_block.sync(block_count, device)?;
-            Ok(inode)
-        } else {
-            Err(Error::new(ErrorKind::Other, "No available inode"))
-        }
-    }
-    /** Get an inode */
-    pub fn get_inode<D>(&self, device: &mut D, inode: u64) -> IOResult<INode>
-    where
-        D: Read + Write + Seek,
-    {
-        let block_count = inode_table_relative_to_absolute!(
-            self.group_count,
-            inode / (BLOCK_SIZE / INODE_SIZE) as u64
-        );
-        let block = load_block(device, block_count)?;
-        let inodes = INodeBlock::load(block);
-
-        Ok(inodes.inodes[(inode % (BLOCK_SIZE / INODE_SIZE) as u64) as usize])
-    }
-    /** Write an inode */
-    pub fn set_inode<D>(&self, device: &mut D, inode_count: u64, inode: INode) -> IOResult<()>
-    where
-        D: Read + Write + Seek,
-    {
-        let block_count = inode_table_relative_to_absolute!(
-            self.group_count,
-            inode_count / (BLOCK_SIZE / INODE_SIZE) as u64
-        );
-        let block = load_block(device, block_count)?;
-        let mut inode_table_block = INodeBlock::load(block);
-
-        inode_table_block.inodes[(inode_count % (BLOCK_SIZE / INODE_SIZE) as u64) as usize] = inode;
-        inode_table_block.sync(block_count, device)?;
-
-        Ok(())
-    }
-    /** Release an inode */
-    pub fn release_inode(&mut self, inode: u64) {
-        self.inode_bitmap.set_unused(inode);
-    }
     /** Allocate a data block */
-    pub fn new_block(&mut self) -> Option<u64> {
+    pub fn new_block(&mut self) -> IOResult<u64> {
         for block in 0..BLOCK_MAP_SIZE {
             for count in 0..BLOCK_SIZE / 2 {
                 if self.block_map[block].counts[count] == 0 {
                     self.block_map[block].counts[count] = 1;
-                    return Some((block * (BLOCK_SIZE / 2) + count) as u64);
+                    return Ok((block * (BLOCK_SIZE / 2) + count) as u64);
                 }
             }
         }
-        None
+        Err(Error::new(ErrorKind::Other, "No enough block"))
     }
     /** Clone a data block */
     pub fn clone_block(&mut self, count: u64) {
@@ -228,11 +186,8 @@ impl BlockGroup {
     where
         D: Read + Write + Seek,
     {
-        self.inode_bitmap
-            .sync(self.group_count * GPOUP_SIZE as u64 + 1, device)?;
-
         for (i, block) in self.block_map.iter_mut().enumerate() {
-            block.sync(self.group_count * GPOUP_SIZE as u64 + 2 + i as u64, device)?;
+            block.sync(device, self.group_count * GPOUP_SIZE as u64 + 1 + i as u64)?;
         }
 
         Ok(())

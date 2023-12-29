@@ -2,6 +2,7 @@ use crate::block::*;
 use crate::btree::BtreeNode;
 use crate::dir::Directory;
 use crate::inode::{INode, ACL_SYMBOLLINK};
+use crate::subvol::Subvolume;
 use crate::Filesystem;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
@@ -37,20 +38,26 @@ pub struct File {
 
 impl File {
     /** Create a file */
-    pub fn create<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    pub fn create<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: &str,
+    ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
-        let inode_count = create(fs, device).unwrap();
+        let inode_count = create(fs, subvol, device).unwrap();
 
-        let mut dir = Directory::open(fs, device, &dir_name!(path))?;
-        dir.add_file(fs, device, &base_name!(path), inode_count)?;
+        let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
+        dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
 
-        Self::open_by_inode(fs, device, inode_count)
+        Self::open_by_inode(fs, subvol, device, inode_count)
     }
     /** Create a symbol link */
     pub fn create_symlink<D>(
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         path: &str,
         point_to: &str,
@@ -58,12 +65,12 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        let inode_count = create_symlink(fs, device, point_to).unwrap();
+        let inode_count = create_symlink(fs, subvol, device, point_to).unwrap();
 
-        let mut dir = Directory::open(fs, device, &dir_name!(path))?;
-        dir.add_file(fs, device, &base_name!(path), inode_count)?;
+        let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
+        dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
 
-        Self::open_by_inode(fs, device, inode_count)
+        Self::open_by_inode(fs, subvol, device, inode_count)
     }
     pub fn from_inode<D>(
         fs: &mut Filesystem,
@@ -84,29 +91,39 @@ impl File {
         })
     }
     /** Open file by absolute path */
-    pub fn open<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    pub fn open<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: &str,
+    ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
-        let inode_count = *Directory::open(fs, device, &dir_name!(path))?
+        let inode_count = *Directory::open(fs, subvol, device, &dir_name!(path))?
             .list_dir(fs, device)?
             .get(&base_name!(path))
             .unwrap();
 
-        let inode = fs.get_inode(device, inode_count)?;
+        let inode = subvol.get_inode(fs, device, inode_count)?;
 
         if inode.is_symlink() {
             let path = Self::from_inode(fs, device, inode_count, inode)?.read_link(fs, device)?;
-            Self::open(fs, device, &path)
+            Self::open(fs, subvol, device, &path)
         } else {
-            Self::open_by_inode(fs, device, inode_count)
+            Self::open_by_inode(fs, subvol, device, inode_count)
         }
     }
-    pub fn open_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<Self>
+    pub fn open_by_inode<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        inode_count: u64,
+    ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
-        let inode = fs.get_inode(device, inode_count)?;
+        let inode = subvol.get_inode(fs, device, inode_count)?;
 
         Ok(Self {
             inode,
@@ -121,6 +138,7 @@ impl File {
     pub fn write<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         mut offset: u64,
         mut data: &[u8],
@@ -189,7 +207,7 @@ impl File {
                 offset += written_size as u64;
             }
         }
-        fs.set_inode(device, self.inode_count, self.inode)?;
+        subvol.set_inode(fs, device, self.inode_count, self.inode)?;
         Ok(())
     }
     /** Read from file */
@@ -244,13 +262,19 @@ impl File {
         Ok(())
     }
     /** Adjust file size */
-    pub fn truncate<D>(&mut self, fs: &mut Filesystem, device: &mut D, size: u64) -> IOResult<()>
+    pub fn truncate<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        size: u64,
+    ) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
         if size > self.get_size() {
             self.inode.size = size;
-            fs.set_inode(device, self.inode_count, self.inode)?;
+            subvol.set_inode(fs, device, self.inode_count, self.inode)?;
         } else {
             let start_block = if size % BLOCK_SIZE as u64 == 0 {
                 size / BLOCK_SIZE as u64 + 1
@@ -271,7 +295,7 @@ impl File {
                         as u8;
             }
             self.inode.size = size;
-            fs.set_inode(device, self.inode_count, self.inode)?;
+            subvol.set_inode(fs, device, self.inode_count, self.inode)?;
         }
         Ok(())
     }
@@ -294,56 +318,77 @@ impl File {
         Ok(String::from_utf8_lossy(&path).to_string())
     }
     /** Remove a file */
-    pub fn remove<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<()>
+    pub fn remove<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: &str,
+    ) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        let fd = Self::open(fs, device, path)?;
-        remove_by_inode(fs, device, fd.inode_count)?;
+        let fd = Self::open(fs, subvol, device, path)?;
+        remove_by_inode(fs, subvol, device, fd.inode_count)?;
         Ok(())
     }
 }
 
 /** Create a file and return the inode count */
-pub fn create<D>(fs: &mut Filesystem, device: &mut D) -> Option<u64>
+pub fn create<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D) -> Option<u64>
 where
     D: Read + Write + Seek,
 {
-    let inode_count = fs.new_inode(device).unwrap();
-    let mut inode = fs.get_inode(device, inode_count).unwrap();
+    let inode_count = subvol.new_inode(fs, device).unwrap();
+    let mut inode = subvol.get_inode(fs, device, inode_count).unwrap();
     let btree_root = fs.new_block().unwrap();
     inode.btree_root = btree_root;
     let btree = BtreeNode::default();
     fs.set_data_block(device, btree_root, btree.dump()).unwrap();
-    fs.set_inode(device, inode_count, inode).unwrap();
+    subvol.set_inode(fs, device, inode_count, inode).unwrap();
 
     Some(inode_count)
 }
 
 /** Create a symbol link and return the inode count */
-pub fn create_symlink<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<u64>
+pub fn create_symlink<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+    path: &str,
+) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
-    let inode_count = create(fs, device).unwrap();
-    File::open_by_inode(fs, device, inode_count)?.write(fs, device, 0, path.as_bytes())?;
-    let mut inode = fs.get_inode(device, inode_count)?;
+    let inode_count = create(fs, subvol, device).unwrap();
+    File::open_by_inode(fs, subvol, device, inode_count)?.write(
+        fs,
+        subvol,
+        device,
+        0,
+        path.as_bytes(),
+    )?;
+    let mut inode = subvol.get_inode(fs, device, inode_count)?;
     inode.permission |= ACL_SYMBOLLINK;
-    fs.set_inode(device, inode_count, inode)?;
+    subvol.set_inode(fs, device, inode_count, inode)?;
 
     Ok(inode_count)
 }
 
 /** Remove a file */
-pub fn remove_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
+pub fn remove_by_inode<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+    inode_count: u64,
+) -> IOResult<()>
 where
     D: Read + Write + Seek,
 {
-    let mut inode = fs.get_inode(device, inode_count).unwrap();
+    let mut inode = subvol.get_inode(fs, device, inode_count).unwrap();
 
     if inode.hlinks > 0 {
         inode.hlinks -= 1;
-        fs.set_inode(device, inode_count, inode)?;
+        subvol.set_inode(fs, device, inode_count, inode)?;
     } else {
         let mut btree_root = BtreeNode::new(
             inode.btree_root,
@@ -351,18 +396,23 @@ where
         );
 
         btree_root.destroy(fs, device, inode.btree_depth as usize);
-        fs.release_inode(inode_count);
+        subvol.release_inode(fs, device, inode_count)?;
     }
     Ok(())
 }
 
 /** Copy a file */
-pub fn copy_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<u64>
+pub fn copy_by_inode<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+    inode_count: u64,
+) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
-    let inode = fs.get_inode(device, inode_count).unwrap();
-    let new_inode_count = fs.new_inode(device).unwrap();
+    let inode = subvol.get_inode(fs, device, inode_count).unwrap();
+    let new_inode_count = subvol.new_inode(fs, device).unwrap();
     let mut new_inode = INode::default();
 
     let mut btree_root = BtreeNode::new(
@@ -373,6 +423,6 @@ where
     new_inode.size = inode.size;
     new_inode.btree_root = inode.btree_root;
     new_inode.btree_depth = inode.btree_depth;
-    fs.set_inode(device, new_inode_count, new_inode)?;
+    subvol.set_inode(fs, device, new_inode_count, new_inode)?;
     Ok(new_inode_count)
 }

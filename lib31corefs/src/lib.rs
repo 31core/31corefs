@@ -3,96 +3,75 @@ pub mod btree;
 pub mod dir;
 pub mod file;
 pub mod inode;
+pub mod subvol;
 
-use std::io::{Read, Result as IOResult, Seek, Write};
+use std::io::{Error, ErrorKind, Result as IOResult};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 use block::*;
+use subvol::{Subvolume, SubvolumeManager};
 
 pub const FS_MAGIC_HEADER: [u8; 4] = [0x31, 0xc0, 0x8e, 0xf5];
 pub const FS_VERSION: u8 = 1;
 
 #[derive(Debug, Default)]
 pub struct Filesystem {
-    pub sb: block::SuperBlock,
-    pub groups: Vec<block::BlockGroup>,
+    pub sb: SuperBlock,
+    pub subvol_mgr: SubvolumeManager,
+    pub groups: Vec<BlockGroup>,
 }
 
 impl Filesystem {
-    pub fn create<D>(device: &mut D, block_size: usize) -> Self
+    pub fn create<D>(device: &mut D, block_size: usize) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
         let mut fs = Self::default();
-        let groups_count = block_size / block::GPOUP_SIZE;
+        let groups_count = block_size / GPOUP_SIZE;
         fs.sb.groups = groups_count as u64;
         fs.sb.uuid = *uuid::Uuid::new_v4().as_bytes();
-        fs.groups = vec![block::BlockGroup::default(); groups_count];
+        fs.sb.total_blocks = block_size as u64;
+        fs.groups = vec![BlockGroup::default(); groups_count];
 
         for (i, group) in fs.groups.iter_mut().enumerate() {
             group.group_count = i as u64;
         }
 
-        fs.sb.root_inode = dir::create(&mut fs, device).unwrap();
+        fs.sb.subvol_mgr = subvol::SubvolumeManager::allocate_on_block(&mut fs, device)?;
 
-        fs
+        fs.sb.default_subvol = fs.new_subvolume(device)?;
+
+        Ok(fs)
     }
-    pub fn load<D>(device: &mut D) -> Self
+    pub fn load<D>(device: &mut D) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
-        let sb = block::SuperBlock::load(block::load_block(device, 0).unwrap());
+        let sb = SuperBlock::load(block::load_block(device, 0)?);
 
-        let mut groups = vec![block::BlockGroup::default(); sb.groups as usize];
+        let mut groups = vec![BlockGroup::default(); sb.groups as usize];
 
         for (i, group) in groups.iter_mut().enumerate() {
             group.group_count = i as u64;
-            group.load(device).unwrap();
+            group.load(device)?;
         }
 
-        Self { sb, groups }
-    }
-    /** Allocate an inode */
-    pub fn new_inode<D>(&mut self, device: &mut D) -> Option<u64>
-    where
-        D: Read + Write + Seek,
-    {
-        for group in &mut self.groups {
-            if let Ok(inode) = group.new_inode(device) {
-                return Some(inode);
-            }
-        }
-        None
-    }
-    pub fn get_inode<D>(&self, device: &mut D, inode: u64) -> IOResult<inode::INode>
-    where
-        D: Read + Write + Seek,
-    {
-        let group = inode / INODE_PER_GROUP as u64;
-        let relative_inode = inode % INODE_PER_GROUP as u64;
-        self.groups[group as usize].get_inode(device, relative_inode)
-    }
-    pub fn set_inode<D>(&self, device: &mut D, count: u64, inode: inode::INode) -> IOResult<()>
-    where
-        D: Read + Write + Seek,
-    {
-        let group = count / INODE_PER_GROUP as u64;
-        let relative_inode = count % INODE_PER_GROUP as u64;
-        self.groups[group as usize].set_inode(device, relative_inode, inode)
-    }
-    /** Release an inode */
-    pub fn release_inode(&mut self, inode: u64) {
-        let group = inode / INODE_PER_GROUP as u64;
-        let relative_inode = inode % INODE_PER_GROUP as u64;
-        self.groups[group as usize].release_inode(relative_inode);
+        let subvol_mgr = SubvolumeManager::load(load_block(device, sb.subvol_mgr)?);
+
+        Ok(Self {
+            sb,
+            groups,
+            subvol_mgr,
+        })
     }
     /** Allocate a data block */
-    pub fn new_block(&mut self) -> Option<u64> {
+    pub fn new_block(&mut self) -> IOResult<u64> {
         for (i, group) in self.groups.iter_mut().enumerate() {
-            if let Some(count) = group.new_block() {
-                return Some(data_block_relative_to_absolute!(i as u64, count));
+            if let Ok(count) = group.new_block() {
+                return Ok(data_block_relative_to_absolute!(i as u64, count));
             }
         }
-        None
+        Err(Error::new(ErrorKind::Other, "No enough block"))
     }
     /** Copy out a mutiple referenced data block */
     pub fn block_copy_out<D>(&mut self, device: &mut D, count: u64) -> IOResult<u64>
@@ -126,7 +105,7 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        device.seek(std::io::SeekFrom::Start(count * BLOCK_SIZE as u64))?;
+        device.seek(SeekFrom::Start(count * BLOCK_SIZE as u64))?;
         device.write_all(&block)?;
         Ok(())
     }
@@ -142,7 +121,7 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        device.seek(std::io::SeekFrom::Start(count * BLOCK_SIZE as u64))?;
+        device.seek(SeekFrom::Start(count * BLOCK_SIZE as u64))?;
         let mut block = [0; BLOCK_SIZE];
         device.read_exact(&mut block)?;
         Ok(block)
@@ -152,11 +131,38 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        self.sb.sync(0, device)?;
+        self.sb.sync(device, 0)?;
         for group in &mut self.groups {
             group.sync(device)?;
         }
 
         Ok(())
+    }
+    pub fn new_subvolume<D>(&mut self, device: &mut D) -> IOResult<u64>
+    where
+        D: Read + Write + Seek,
+    {
+        let subvol_mgr = self.sb.subvol_mgr;
+        SubvolumeManager::new_subvolume(self, device, subvol_mgr)
+    }
+    pub fn get_subvolume<D>(&self, device: &mut D, id: u64) -> Subvolume
+    where
+        D: Read + Write + Seek,
+    {
+        SubvolumeManager::get_subvolume(self, device, self.sb.subvol_mgr, id).unwrap()
+    }
+    pub fn get_default_subvolume<D>(&self, device: &mut D) -> Subvolume
+    where
+        D: Read + Write + Seek,
+    {
+        SubvolumeManager::get_subvolume(self, device, self.sb.subvol_mgr, self.sb.default_subvol)
+            .unwrap()
+    }
+    /** Create a snapshot */
+    pub fn create_snapshot<D>(&mut self, device: &mut D, id: u64) -> IOResult<u64>
+    where
+        D: Read + Write + Seek,
+    {
+        SubvolumeManager::create_snapshot(self, device, self.sb.subvol_mgr, id)
     }
 }

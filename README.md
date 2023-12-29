@@ -1,6 +1,6 @@
 # 31corefs
 
-31corefs is a cross-platform filesystem written in Rust.
+31corefs is a modern, cross-platform filesystem written in Rust. It support advanced features like subvolume management, snapshot and CoW.
 
 ## Features
 

@@ -1,5 +1,6 @@
 use crate::file::File;
 use crate::inode::ACL_DIRECTORY;
+use crate::subvol::Subvolume;
 use crate::Filesystem;
 use crate::{base_name, dir_name};
 use std::collections::HashMap;
@@ -11,20 +12,30 @@ pub struct Directory {
 
 impl Directory {
     /** Create a directory */
-    pub fn create<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    pub fn create<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: &str,
+    ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
-        let inode_count = create(fs, device).unwrap();
+        let inode_count = create(fs, subvol, device).unwrap();
 
-        let mut dir = Directory::open(fs, device, &dir_name!(path))?;
-        dir.add_file(fs, device, &base_name!(path), inode_count)?;
+        let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
+        dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
 
         Ok(Self {
-            fd: File::open_by_inode(fs, device, inode_count)?,
+            fd: File::open_by_inode(fs, subvol, device, inode_count)?,
         })
     }
-    pub fn open<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<Self>
+    pub fn open<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: &str,
+    ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
@@ -32,17 +43,17 @@ impl Directory {
         path.remove(0);
 
         let mut dir = Self {
-            fd: File::open_by_inode(fs, device, fs.sb.root_inode).unwrap(),
+            fd: File::open_by_inode(fs, subvol, device, 0)?,
         };
 
         for file in path {
             let dirs = dir.list_dir(fs, device).unwrap();
             let inode_count = *dirs.get(&file.to_string_lossy().to_string()).unwrap();
-            let inode = fs.get_inode(device, inode_count)?;
+            let inode = subvol.get_inode(fs, device, inode_count)?;
             if inode.is_symlink() {
-                let symlink = File::open_by_inode(fs, device, inode_count)?;
+                let symlink = File::open_by_inode(fs, subvol, device, inode_count)?;
                 let original_path = symlink.read_link(fs, device)?;
-                return Self::open(fs, device, &original_path);
+                return Self::open(fs, subvol, device, &original_path);
             } else if !inode.is_dir() {
                 return Err(Error::from(ErrorKind::PermissionDenied));
             }
@@ -81,6 +92,7 @@ impl Directory {
     pub fn add_file<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         file_name: &str,
         inode: u64,
@@ -102,7 +114,8 @@ impl Directory {
         dir_data.push(file_name.len() as u8);
         dir_data.extend(file_name.as_bytes());
 
-        self.fd.write(fs, device, self.fd.get_size(), &dir_data)?;
+        self.fd
+            .write(fs, subvol, device, self.fd.get_size(), &dir_data)?;
 
         Ok(())
     }
@@ -110,6 +123,7 @@ impl Directory {
     pub fn remove_file<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         file_name: &str,
     ) -> IOResult<()>
@@ -136,8 +150,9 @@ impl Directory {
                 break;
             }
         }
-        self.fd.write(fs, device, 0, &dir_data)?;
-        self.fd.truncate(fs, device, dir_data.len() as u64)?;
+        self.fd.write(fs, subvol, device, 0, &dir_data)?;
+        self.fd
+            .truncate(fs, subvol, device, dir_data.len() as u64)?;
 
         Ok(())
     }
@@ -145,6 +160,7 @@ impl Directory {
     pub fn add_hard_link<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         inode: u64,
         file_name: &str,
@@ -152,32 +168,37 @@ impl Directory {
     where
         D: Read + Write + Seek,
     {
-        let mut fd = fs.get_inode(device, inode)?;
+        let mut fd = subvol.get_inode(fs, device, inode)?;
         fd.hlinks += 1;
-        fs.set_inode(device, inode, fd)?;
-        self.add_file(fs, device, file_name, inode)?;
+        subvol.set_inode(fs, device, inode, fd)?;
+        self.add_file(fs, subvol, device, file_name, inode)?;
         Ok(())
     }
     /** Remove a directory */
-    pub fn remove<D>(fs: &mut Filesystem, device: &mut D, path: &str) -> IOResult<()>
+    pub fn remove<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: &str,
+    ) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        let fd = Self::open(fs, device, path)?;
-        remove_by_inode(fs, device, fd.fd.get_inode())?;
+        let fd = Self::open(fs, subvol, device, path)?;
+        remove_by_inode(fs, subvol, device, fd.fd.get_inode())?;
         Ok(())
     }
 }
 
 /** Create a directory and return the inode count */
-pub fn create<D>(fs: &mut Filesystem, device: &mut D) -> Option<u64>
+pub fn create<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D) -> Option<u64>
 where
     D: Read + Write + Seek,
 {
-    if let Some(inode_count) = crate::file::create(fs, device) {
-        let mut inode = fs.get_inode(device, inode_count).unwrap();
+    if let Some(inode_count) = crate::file::create(fs, subvol, device) {
+        let mut inode = subvol.get_inode(fs, device, inode_count).unwrap();
         inode.permission |= ACL_DIRECTORY;
-        fs.set_inode(device, inode_count, inode).unwrap();
+        subvol.set_inode(fs, device, inode_count, inode).unwrap();
         Some(inode_count)
     } else {
         None
@@ -185,18 +206,23 @@ where
 }
 
 /** Remove a directory */
-pub fn remove_by_inode<D>(fs: &mut Filesystem, device: &mut D, inode_count: u64) -> IOResult<()>
+pub fn remove_by_inode<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+    inode_count: u64,
+) -> IOResult<()>
 where
     D: Read + Write + Seek,
 {
-    let inode = fs.get_inode(device, inode_count)?;
+    let inode = subvol.get_inode(fs, device, inode_count)?;
     if inode.size > 0 {
         Err(Error::new(
             ErrorKind::PermissionDenied,
             "Directory isn't empty",
         ))
     } else {
-        crate::file::remove_by_inode(fs, device, inode_count)?;
+        crate::file::remove_by_inode(fs, subvol, device, inode_count)?;
         Ok(())
     }
 }

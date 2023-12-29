@@ -1,13 +1,14 @@
+use crate::block::BLOCK_SIZE;
+
 pub const INODE_SIZE: usize = 64;
+pub const INODE_PER_GROUP: usize = BLOCK_SIZE / INODE_SIZE;
 
 pub const ACL_DIRECTORY: u16 = 1 << 15;
 pub const ACL_SYMBOLLINK: u16 = 1 << 14;
 
 #[derive(Default, Debug, Clone, Copy)]
 /**
- * INode
- *
- * # Data structure:
+ * # Data structure
  *
  * |Start|End|Description|
  * |-----|---|-----------|

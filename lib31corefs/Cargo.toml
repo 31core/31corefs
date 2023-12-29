@@ -2,6 +2,8 @@
 name = "lib31corefs"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+authors = ["31core 31core@tutanota.com"]
 
 [lib]
 path = "src/lib.rs"

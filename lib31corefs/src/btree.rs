@@ -83,10 +83,9 @@ impl BtreeNode {
 
         let another_block = fs.new_block().unwrap();
         another.block_count = another_block;
-        fs.set_data_block(device, another_block, another.dump())
-            .unwrap();
-        fs.set_data_block(device, self.block_count, self.dump())
-            .unwrap();
+        another.sync(device, another_block).unwrap();
+        self.sync(device, self.block_count).unwrap();
+
         (*another.offsets.first().unwrap(), another.block_count)
     }
     /** Insert an offset into B-Tree */
@@ -112,12 +111,12 @@ impl BtreeNode {
 
             let left_block = fs.new_block().unwrap();
             left.block_count = left_block;
-            fs.set_data_block(device, left_block, left.dump())?;
+            left.sync(device, left_block)?;
 
             self.clear();
             self.push(*left.offsets.first().unwrap(), left_block);
             self.push(id, block);
-            fs.set_data_block(device, self.block_count, self.dump())?;
+            self.sync(device, self.block_count)?;
 
             Ok(depth + 1)
         } else {
@@ -148,7 +147,7 @@ impl BtreeNode {
             if self.len() > MAX_IDS {
                 return Ok(Some(self.part(fs, device)));
             } else {
-                fs.set_data_block(device, self.block_count, self.dump())?;
+                self.sync(device, self.block_count)?;
             }
         } else {
             /* find child node to insert */
@@ -172,7 +171,7 @@ impl BtreeNode {
                     if self.len() > MAX_IDS {
                         return Ok(Some(self.part(fs, device)));
                     } else {
-                        fs.set_data_block(device, self.block_count, self.dump())?;
+                        self.sync(device, self.block_count)?;
                     }
                 }
             }
@@ -213,7 +212,7 @@ impl BtreeNode {
             for i in 0..self.len() {
                 if self.offsets[i] == offset {
                     self.ptrs[i] = block;
-                    fs.set_data_block(device, self.block_count, self.dump())?;
+                    self.sync(device, self.block_count)?;
                     break;
                 }
             }
@@ -224,7 +223,7 @@ impl BtreeNode {
                 {
                     if fs.is_multireference(self.ptrs[i]) {
                         self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
-                        fs.set_data_block(device, self.block_count, self.dump())?;
+                        self.sync(device, self.block_count)?;
                     }
                     let child_block = fs.get_data_block(device, self.ptrs[i])?;
                     let mut child_node = Self::new(self.ptrs[i], &child_block);
@@ -257,7 +256,7 @@ impl BtreeNode {
                 self.push(child.offsets[i], child.ptrs[i]);
             }
             fs.release_block(child.block_count);
-            fs.set_data_block(device, self.block_count, self.dump())?;
+            self.sync(device, self.block_count)?;
             return Ok(depth - 1);
         }
         Ok(depth)
@@ -279,7 +278,7 @@ impl BtreeNode {
                 {
                     if fs.is_multireference(self.ptrs[i]) {
                         self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
-                        fs.set_data_block(device, self.block_count, self.dump())?;
+                        self.sync(device, self.block_count)?;
                     }
                     let child_block = fs.get_data_block(device, self.ptrs[i])?;
                     let mut child_node = Self::new(self.ptrs[i], &child_block);
@@ -292,7 +291,7 @@ impl BtreeNode {
                         if i > 0 {
                             if fs.is_multireference(self.ptrs[i - 1]) {
                                 self.ptrs[i - 1] = fs.block_copy_out(device, self.ptrs[i - 1])?;
-                                fs.set_data_block(device, self.block_count, self.dump())?;
+                                self.sync(device, self.block_count)?;
                             }
                             let previous_node_block =
                                 fs.get_data_block(device, self.ptrs[i - 1])?;
@@ -312,22 +311,14 @@ impl BtreeNode {
                                 let id = previous_node.offsets.pop().unwrap();
                                 let ptr = previous_node.ptrs.pop().unwrap();
                                 child_node.insert(0, id, ptr);
-                                fs.set_data_block(
-                                    device,
-                                    child_node.block_count,
-                                    child_node.dump(),
-                                )?;
+                                child_node.sync(device, child_node.block_count)?;
                                 self.offsets[i] = id;
                             }
-                            fs.set_data_block(
-                                device,
-                                previous_node.block_count,
-                                previous_node.dump(),
-                            )?;
+                            previous_node.sync(device, previous_node.block_count)?;
                         } else if i < self.len() - 1 {
                             if fs.is_multireference(self.ptrs[i + 1]) {
                                 self.ptrs[i + 1] = fs.block_copy_out(device, self.ptrs[i + 1])?;
-                                fs.set_data_block(device, self.block_count, self.dump())?;
+                                self.sync(device, self.block_count)?;
                             }
                             let next_node_block = fs.get_data_block(device, self.ptrs[i + 1])?;
                             let mut next_node = Self::new(self.ptrs[i + 1], &next_node_block);
@@ -348,17 +339,13 @@ impl BtreeNode {
                                 let ptr = *next_node.ptrs.first().unwrap();
                                 next_node.remove(0);
                                 child_node.push(id, ptr);
-                                fs.set_data_block(
-                                    device,
-                                    child_node.block_count,
-                                    child_node.dump(),
-                                )?;
+                                child_node.sync(device, child_node.block_count)?;
                                 self.offsets[i + 1] = *next_node.offsets.first().unwrap();
                             }
-                            fs.set_data_block(device, next_node.block_count, next_node.dump())?;
+                            next_node.sync(device, next_node.block_count)?;
                         }
                     }
-                    fs.set_data_block(device, self.block_count, self.dump())?;
+                    self.sync(device, self.block_count)?;
                 }
             }
         } else {
@@ -366,7 +353,7 @@ impl BtreeNode {
             for i in 0..self.len() {
                 if self.offsets[i] == offset {
                     self.remove(i);
-                    fs.set_data_block(device, self.block_count, self.dump())?;
+                    self.sync(device, self.block_count)?;
                     break;
                 }
             }
@@ -407,6 +394,56 @@ impl BtreeNode {
             }
         }
         None
+    }
+    fn find_unused_internal<D>(
+        &self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        depth: usize,
+    ) -> (Option<u64>, Option<u64>)
+    where
+        D: Write + Read + Seek,
+    {
+        if depth > 0 {
+            for i in 0..self.len() {
+                let block = fs.get_data_block(device, self.ptrs[i]).unwrap();
+                let child = Self::new(self.ptrs[i], &block);
+                let result = child.find_unused_internal(fs, device, depth - 1);
+
+                if let Some(id) = result.0 {
+                    return (Some(id), None);
+                } else if let Some(id) = result.1 {
+                    if i < self.len() - 1 && id + 1 < self.offsets[i + 1] || i == self.len() - 1 {
+                        return (Some(id + 1), None);
+                    }
+                }
+            }
+        } else if self.len() > 1 {
+            for i in 0..self.len() - 1 {
+                if self.offsets[i] + 1 < self.offsets[i + 1] {
+                    return (Some(self.offsets[i] + 1), None);
+                }
+            }
+            return (None, Some(*self.offsets.last().unwrap() + 1));
+        } else if self.len() == 1 {
+            return (None, Some(*self.offsets.last().unwrap() + 1));
+        }
+        (None, None)
+    }
+    /** Find unused id */
+    pub fn find_unused<D>(&self, fs: &mut Filesystem, device: &mut D, depth: usize) -> u64
+    where
+        D: Write + Read + Seek,
+    {
+        let result = self.find_unused_internal(fs, device, depth);
+
+        if let Some(id) = result.0 {
+            id
+        } else if let Some(id) = result.1 {
+            id
+        } else {
+            0
+        }
     }
     /** Clone the full B-Tree */
     pub fn clone_tree<D>(&mut self, fs: &mut Filesystem, device: &mut D, depth: usize)
