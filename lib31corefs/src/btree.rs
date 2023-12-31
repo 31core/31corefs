@@ -8,8 +8,8 @@ const UNIT_SIZE: usize = 8 + 8;
 #[derive(Default, Debug)]
 pub struct BtreeNode {
     pub block_count: u64,
-    pub offsets: Vec<u64>,
-    pub ptrs: Vec<u64>,
+    pub keys: Vec<u64>,
+    pub values: Vec<u64>,
 }
 
 impl Block for BtreeNode {
@@ -27,17 +27,17 @@ impl Block for BtreeNode {
             if ptr == 0 {
                 break;
             }
-            node.push(id, ptr);
+            node.push_item(id, ptr);
         }
         node
     }
     fn dump(&self) -> [u8; BLOCK_SIZE] {
         let mut block = [0; BLOCK_SIZE];
 
-        for (i, _) in self.offsets.iter().enumerate() {
-            block[UNIT_SIZE * i..UNIT_SIZE * i + 8].copy_from_slice(&self.offsets[i].to_be_bytes());
+        for (i, _) in self.keys.iter().enumerate() {
+            block[UNIT_SIZE * i..UNIT_SIZE * i + 8].copy_from_slice(&self.keys[i].to_be_bytes());
             block[UNIT_SIZE * i + 8..UNIT_SIZE * i + UNIT_SIZE]
-                .copy_from_slice(&self.ptrs[i].to_be_bytes());
+                .copy_from_slice(&self.values[i].to_be_bytes());
         }
         block
     }
@@ -51,17 +51,17 @@ impl BtreeNode {
     }
     /** Add an id into the node */
     fn add(&mut self, id: u64, ptr: u64) {
-        if self.offsets.is_empty() {
-            self.push(id, ptr);
+        if self.keys.is_empty() {
+            self.push_item(id, ptr);
         } else {
-            for (i, _) in self.offsets.iter().enumerate() {
-                if i == 0 && id < self.offsets[0] {
-                    self.insert(0, id, ptr);
+            for (i, _) in self.keys.iter().enumerate() {
+                if i == 0 && id < self.keys[0] {
+                    self.insert_item(0, id, ptr);
                     break;
-                } else if i < self.len() - 1 && id > self.offsets[i] && id < self.offsets[i + 1]
+                } else if i < self.len() - 1 && id > self.keys[i] && id < self.keys[i + 1]
                     || i == self.len() - 1
                 {
-                    self.insert(i + 1, id, ptr);
+                    self.insert_item(i + 1, id, ptr);
                     break;
                 }
             }
@@ -78,7 +78,7 @@ impl BtreeNode {
     {
         let mut another = Self::default();
         for _ in 0..self.len() / 2 {
-            another.insert(0, self.offsets.pop().unwrap(), self.ptrs.pop().unwrap());
+            another.insert_item(0, self.keys.pop().unwrap(), self.values.pop().unwrap());
         }
 
         let another_block = fs.new_block().unwrap();
@@ -86,10 +86,10 @@ impl BtreeNode {
         another.sync(device, another_block).unwrap();
         self.sync(device, self.block_count).unwrap();
 
-        (*another.offsets.first().unwrap(), another.block_count)
+        (*another.keys.first().unwrap(), another.block_count)
     }
     /** Insert an offset into B-Tree */
-    pub fn offset_insert<D>(
+    pub fn insert<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
@@ -103,10 +103,10 @@ impl BtreeNode {
         if fs.is_multireference(self.block_count) {
             self.block_count = fs.block_copy_out(device, self.block_count)?;
         }
-        if let Some((id, block)) = self.offset_insert_internal(fs, device, offset, block, depth)? {
+        if let Some((id, block)) = self.insert_internal(fs, device, offset, block, depth)? {
             let mut left = Self::default();
             for i in 0..self.len() {
-                left.push(self.offsets[i], self.ptrs[i]);
+                left.push_item(self.keys[i], self.values[i]);
             }
 
             let left_block = fs.new_block().unwrap();
@@ -114,8 +114,8 @@ impl BtreeNode {
             left.sync(device, left_block)?;
 
             self.clear();
-            self.push(*left.offsets.first().unwrap(), left_block);
-            self.push(id, block);
+            self.push_item(*left.keys.first().unwrap(), left_block);
+            self.push_item(id, block);
             self.sync(device, self.block_count)?;
 
             Ok(depth + 1)
@@ -129,7 +129,7 @@ impl BtreeNode {
      * * node ID of the right node
      * * block count of the right node
      */
-    fn offset_insert_internal<D>(
+    fn insert_internal<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
@@ -152,18 +152,18 @@ impl BtreeNode {
         } else {
             /* find child node to insert */
             for i in 0..self.len() {
-                if i < self.len() - 1 && offset > self.offsets[i] && offset < self.offsets[i + 1]
+                if i < self.len() - 1 && offset > self.keys[i] && offset < self.keys[i + 1]
                     || i == self.len() - 1
                 {
-                    if fs.is_multireference(self.ptrs[i]) {
-                        self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
+                    if fs.is_multireference(self.values[i]) {
+                        self.values[i] = fs.block_copy_out(device, self.values[i])?;
                     }
-                    let child = fs.get_data_block(device, self.ptrs[i]).unwrap();
-                    let mut child_node = Self::new(self.ptrs[i], &child);
+                    let child = fs.get_data_block(device, self.values[i]).unwrap();
+                    let mut child_node = Self::new(self.values[i], &child);
 
                     /* if parted into tow sub trees */
                     if let Some((id, block)) =
-                        child_node.offset_insert_internal(fs, device, offset, block, depth - 1)?
+                        child_node.insert_internal(fs, device, offset, block, depth - 1)?
                     {
                         self.add(id, block);
                     }
@@ -179,12 +179,12 @@ impl BtreeNode {
         Ok(None)
     }
     /** Modify an offset from B-Tree */
-    pub fn offset_modify<D>(
+    pub fn modify<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
-        offset: u64,
-        block: u64,
+        key: u64,
+        value: u64,
         depth: usize,
     ) -> IOResult<usize>
     where
@@ -193,15 +193,15 @@ impl BtreeNode {
         if fs.is_multireference(self.block_count) {
             self.block_count = fs.block_copy_out(device, self.block_count)?;
         }
-        self.offset_modify_internal(fs, device, offset, block, depth)?;
+        self.modify_internal(fs, device, key, value, depth)?;
         Ok(depth)
     }
-    fn offset_modify_internal<D>(
+    fn modify_internal<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
-        offset: u64,
-        block: u64,
+        key: u64,
+        value: u64,
         depth: usize,
     ) -> IOResult<()>
     where
@@ -210,32 +210,32 @@ impl BtreeNode {
         if depth == 0 {
             /* find and modify */
             for i in 0..self.len() {
-                if self.offsets[i] == offset {
-                    self.ptrs[i] = block;
+                if self.keys[i] == key {
+                    self.values[i] = value;
                     self.sync(device, self.block_count)?;
                     break;
                 }
             }
         } else {
             for i in 0..self.len() {
-                if i < self.len() - 1 && offset >= self.offsets[i] && offset < self.offsets[i + 1]
+                if i < self.len() - 1 && key >= self.keys[i] && key < self.keys[i + 1]
                     || i == self.len() - 1
                 {
-                    if fs.is_multireference(self.ptrs[i]) {
-                        self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
+                    if fs.is_multireference(self.values[i]) {
+                        self.values[i] = fs.block_copy_out(device, self.values[i])?;
                         self.sync(device, self.block_count)?;
                     }
-                    let child_block = fs.get_data_block(device, self.ptrs[i])?;
-                    let mut child_node = Self::new(self.ptrs[i], &child_block);
+                    let child_block = fs.get_data_block(device, self.values[i])?;
+                    let mut child_node = Self::new(self.values[i], &child_block);
 
-                    child_node.offset_modify_internal(fs, device, offset, block, depth - 1)?;
+                    child_node.modify_internal(fs, device, key, value, depth - 1)?;
                 }
             }
         }
         Ok(())
     }
     /** Remove an offset from B-Tree */
-    pub fn offset_remove<D>(
+    pub fn remove<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
@@ -248,12 +248,12 @@ impl BtreeNode {
         if fs.is_multireference(self.block_count) {
             self.block_count = fs.block_copy_out(device, self.block_count)?;
         }
-        self.offset_remove_internal(fs, device, offset, depth)?;
+        self.remove_internal(fs, device, offset, depth)?;
         if self.len() == 1 {
-            let child = Self::new(self.ptrs[0], &fs.get_data_block(device, self.ptrs[0])?);
+            let child = Self::new(self.values[0], &fs.get_data_block(device, self.values[0])?);
             self.clear();
             for i in 0..child.len() {
-                self.push(child.offsets[i], child.ptrs[i]);
+                self.push_item(child.keys[i], child.values[i]);
             }
             fs.release_block(child.block_count);
             self.sync(device, self.block_count)?;
@@ -261,7 +261,7 @@ impl BtreeNode {
         }
         Ok(depth)
     }
-    fn offset_remove_internal<D>(
+    fn remove_internal<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
@@ -273,74 +273,76 @@ impl BtreeNode {
     {
         if depth > 0 {
             for i in 0..self.len() {
-                if i < self.len() - 1 && offset >= self.offsets[i] && offset < self.offsets[i + 1]
+                if i < self.len() - 1 && offset >= self.keys[i] && offset < self.keys[i + 1]
                     || i == self.len() - 1
                 {
-                    if fs.is_multireference(self.ptrs[i]) {
-                        self.ptrs[i] = fs.block_copy_out(device, self.ptrs[i])?;
+                    if fs.is_multireference(self.values[i]) {
+                        self.values[i] = fs.block_copy_out(device, self.values[i])?;
                         self.sync(device, self.block_count)?;
                     }
-                    let child_block = fs.get_data_block(device, self.ptrs[i])?;
-                    let mut child_node = Self::new(self.ptrs[i], &child_block);
+                    let child_block = fs.get_data_block(device, self.values[i])?;
+                    let mut child_node = Self::new(self.values[i], &child_block);
 
-                    child_node.offset_remove_internal(fs, device, offset, depth - 1)?;
+                    child_node.remove_internal(fs, device, offset, depth - 1)?;
                     /* when child_node is empty, self.len() must be 0 */
                     if child_node.is_empty() {
-                        self.remove(i);
+                        self.remove_item(i);
                     } else if child_node.len() < MAX_IDS / 2 {
                         if i > 0 {
-                            if fs.is_multireference(self.ptrs[i - 1]) {
-                                self.ptrs[i - 1] = fs.block_copy_out(device, self.ptrs[i - 1])?;
+                            if fs.is_multireference(self.values[i - 1]) {
+                                self.values[i - 1] =
+                                    fs.block_copy_out(device, self.values[i - 1])?;
                                 self.sync(device, self.block_count)?;
                             }
                             let previous_node_block =
-                                fs.get_data_block(device, self.ptrs[i - 1])?;
+                                fs.get_data_block(device, self.values[i - 1])?;
                             let mut previous_node =
-                                Self::new(self.ptrs[i - 1], &previous_node_block);
+                                Self::new(self.values[i - 1], &previous_node_block);
                             /* merge this child node into previous node */
                             if previous_node.len() + child_node.len() <= MAX_IDS {
                                 for child_i in 0..child_node.len() {
-                                    previous_node.push(
-                                        child_node.offsets[child_i],
-                                        child_node.ptrs[child_i],
+                                    previous_node.push_item(
+                                        child_node.keys[child_i],
+                                        child_node.values[child_i],
                                     );
                                 }
                                 fs.release_block(child_node.block_count);
-                                self.remove(i);
+                                self.remove_item(i);
                             } else {
-                                let id = previous_node.offsets.pop().unwrap();
-                                let ptr = previous_node.ptrs.pop().unwrap();
-                                child_node.insert(0, id, ptr);
+                                let id = previous_node.keys.pop().unwrap();
+                                let ptr = previous_node.values.pop().unwrap();
+                                child_node.insert_item(0, id, ptr);
                                 child_node.sync(device, child_node.block_count)?;
-                                self.offsets[i] = id;
+                                self.keys[i] = id;
                             }
                             previous_node.sync(device, previous_node.block_count)?;
                         } else if i < self.len() - 1 {
-                            if fs.is_multireference(self.ptrs[i + 1]) {
-                                self.ptrs[i + 1] = fs.block_copy_out(device, self.ptrs[i + 1])?;
+                            if fs.is_multireference(self.values[i + 1]) {
+                                self.values[i + 1] =
+                                    fs.block_copy_out(device, self.values[i + 1])?;
                                 self.sync(device, self.block_count)?;
                             }
-                            let next_node_block = fs.get_data_block(device, self.ptrs[i + 1])?;
-                            let mut next_node = Self::new(self.ptrs[i + 1], &next_node_block);
+                            let next_node_block = fs.get_data_block(device, self.values[i + 1])?;
+                            let mut next_node = Self::new(self.values[i + 1], &next_node_block);
                             /* merge this child node into next node */
                             if next_node.len() + child_node.len() <= MAX_IDS {
                                 for child_i in (0..child_node.len()).rev() {
-                                    next_node.insert(
+                                    next_node.insert_item(
                                         0,
-                                        child_node.offsets[child_i],
-                                        child_node.ptrs[child_i],
+                                        child_node.keys[child_i],
+                                        child_node.values[child_i],
                                     );
                                 }
-                                self.offsets[i + 1] = *next_node.offsets.first().unwrap();
+                                self.keys[i + 1] = *next_node.keys.first().unwrap();
                                 fs.release_block(child_node.block_count);
-                                self.remove(i);
+                                self.remove_item(i);
                             } else {
-                                let id = *next_node.offsets.first().unwrap();
-                                let ptr = *next_node.ptrs.first().unwrap();
-                                next_node.remove(0);
-                                child_node.push(id, ptr);
+                                let id = *next_node.keys.first().unwrap();
+                                let ptr = *next_node.values.first().unwrap();
+                                next_node.remove_item(0);
+                                child_node.push_item(id, ptr);
                                 child_node.sync(device, child_node.block_count)?;
-                                self.offsets[i + 1] = *next_node.offsets.first().unwrap();
+                                self.keys[i + 1] = *next_node.keys.first().unwrap();
                             }
                             next_node.sync(device, next_node.block_count)?;
                         }
@@ -351,8 +353,8 @@ impl BtreeNode {
         } else {
             /* find and remove */
             for i in 0..self.len() {
-                if self.offsets[i] == offset {
-                    self.remove(i);
+                if self.keys[i] == offset {
+                    self.remove_item(i);
                     self.sync(device, self.block_count)?;
                     break;
                 }
@@ -365,11 +367,11 @@ impl BtreeNode {
      * Return:
      * 1: block count
      */
-    pub fn offset_lookup<D>(
+    pub fn lookup<D>(
         &self,
         fs: &mut Filesystem,
         device: &mut D,
-        offset: u64,
+        key: u64,
         depth: usize,
     ) -> Option<u64>
     where
@@ -377,19 +379,19 @@ impl BtreeNode {
     {
         if depth > 0 {
             for i in 0..self.len() {
-                if i < self.len() - 1 && offset >= self.offsets[i] && offset < self.offsets[i + 1]
+                if i < self.len() - 1 && key >= self.keys[i] && key < self.keys[i + 1]
                     || i == self.len() - 1
                 {
-                    let block = fs.get_data_block(device, self.ptrs[i]).unwrap();
-                    let child = Self::new(offset, &block);
+                    let block = fs.get_data_block(device, self.values[i]).unwrap();
+                    let child = Self::new(key, &block);
 
-                    return child.offset_lookup(fs, device, offset, depth - 1);
+                    return child.lookup(fs, device, key, depth - 1);
                 }
             }
         } else {
-            for i in 0..self.offsets.len() {
-                if offset == self.offsets[i] {
-                    return Some(self.ptrs[i]);
+            for i in 0..self.keys.len() {
+                if key == self.keys[i] {
+                    return Some(self.values[i]);
                 }
             }
         }
@@ -406,27 +408,27 @@ impl BtreeNode {
     {
         if depth > 0 {
             for i in 0..self.len() {
-                let block = fs.get_data_block(device, self.ptrs[i]).unwrap();
-                let child = Self::new(self.ptrs[i], &block);
+                let block = fs.get_data_block(device, self.values[i]).unwrap();
+                let child = Self::new(self.values[i], &block);
                 let result = child.find_unused_internal(fs, device, depth - 1);
 
                 if let Some(id) = result.0 {
                     return (Some(id), None);
                 } else if let Some(id) = result.1 {
-                    if i < self.len() - 1 && id + 1 < self.offsets[i + 1] || i == self.len() - 1 {
+                    if i < self.len() - 1 && id + 1 < self.keys[i + 1] || i == self.len() - 1 {
                         return (Some(id + 1), None);
                     }
                 }
             }
         } else if self.len() > 1 {
             for i in 0..self.len() - 1 {
-                if self.offsets[i] + 1 < self.offsets[i + 1] {
-                    return (Some(self.offsets[i] + 1), None);
+                if self.keys[i] + 1 < self.keys[i + 1] {
+                    return (Some(self.keys[i] + 1), None);
                 }
             }
-            return (None, Some(*self.offsets.last().unwrap() + 1));
+            return (None, Some(*self.keys.last().unwrap() + 1));
         } else if self.len() == 1 {
-            return (None, Some(*self.offsets.last().unwrap() + 1));
+            return (None, Some(*self.keys.last().unwrap() + 1));
         }
         (None, None)
     }
@@ -452,14 +454,14 @@ impl BtreeNode {
     {
         if depth == 0 {
             for i in 0..self.len() {
-                fs.clone_block(self.ptrs[i]);
+                fs.clone_block(self.values[i]);
             }
             fs.clone_block(self.block_count);
         } else {
-            for i in 0..self.offsets.len() {
+            for i in 0..self.keys.len() {
                 let mut child_node = Self::new(
-                    self.ptrs[i],
-                    &fs.get_data_block(device, self.ptrs[i]).unwrap(),
+                    self.values[i],
+                    &fs.get_data_block(device, self.values[i]).unwrap(),
                 );
                 child_node.clone_tree(fs, device, depth - 1);
             }
@@ -473,14 +475,14 @@ impl BtreeNode {
     {
         if depth == 0 {
             for i in 0..self.len() {
-                fs.release_block(self.ptrs[i]);
+                fs.release_block(self.values[i]);
             }
             fs.release_block(self.block_count);
         } else {
-            for i in 0..self.offsets.len() {
+            for i in 0..self.keys.len() {
                 let mut child_node = Self::new(
-                    self.ptrs[i],
-                    &fs.get_data_block(device, self.ptrs[i]).unwrap(),
+                    self.values[i],
+                    &fs.get_data_block(device, self.values[i]).unwrap(),
                 );
                 child_node.destroy(fs, device, depth - 1);
             }
@@ -488,25 +490,25 @@ impl BtreeNode {
         }
     }
     fn len(&self) -> usize {
-        self.offsets.len()
+        self.keys.len()
     }
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn push(&mut self, id: u64, ptr: u64) {
-        self.offsets.push(id);
-        self.ptrs.push(ptr);
+    fn push_item(&mut self, id: u64, ptr: u64) {
+        self.keys.push(id);
+        self.values.push(ptr);
     }
-    fn insert(&mut self, index: usize, id: u64, ptr: u64) {
-        self.offsets.insert(index, id);
-        self.ptrs.insert(index, ptr);
+    fn insert_item(&mut self, index: usize, id: u64, ptr: u64) {
+        self.keys.insert(index, id);
+        self.values.insert(index, ptr);
     }
-    fn remove(&mut self, index: usize) {
-        self.offsets.remove(index);
-        self.ptrs.remove(index);
+    fn remove_item(&mut self, index: usize) {
+        self.keys.remove(index);
+        self.values.remove(index);
     }
     fn clear(&mut self) {
-        self.offsets.clear();
-        self.ptrs.clear();
+        self.keys.clear();
+        self.values.clear();
     }
 }

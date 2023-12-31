@@ -330,3 +330,40 @@ impl Block for INodeBlock {
         bytes
     }
 }
+
+pub struct INoddeGroup {
+    pub inodes: [INode; INODE_PER_GROUP],
+}
+
+impl Default for INoddeGroup {
+    fn default() -> Self {
+        Self {
+            inodes: [INode::default(); INODE_PER_GROUP],
+        }
+    }
+}
+
+impl Block for INoddeGroup {
+    fn dump(&self) -> [u8; BLOCK_SIZE] {
+        let mut bytes = [0; BLOCK_SIZE];
+
+        for (i, inode) in self.inodes.iter().enumerate() {
+            bytes[i * INODE_SIZE..(i + 1) * INODE_SIZE].copy_from_slice(&inode.dump());
+        }
+
+        bytes
+    }
+    fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
+        let mut block = Self::default();
+
+        for i in 0..INODE_PER_GROUP {
+            block.inodes[i] = INode::load(
+                bytes[i * INODE_SIZE..(i + 1) * INODE_SIZE]
+                    .try_into()
+                    .unwrap(),
+            );
+        }
+
+        block
+    }
+}

@@ -37,7 +37,7 @@ impl Filesystem {
             group.group_count = i as u64;
         }
 
-        fs.sb.subvol_mgr = subvol::SubvolumeManager::allocate_on_block(&mut fs, device)?;
+        fs.sb.subvol_mgr = SubvolumeManager::allocate_on_block(&mut fs, device)?;
 
         fs.sb.default_subvol = fs.new_subvolume(device)?;
 
@@ -68,6 +68,8 @@ impl Filesystem {
     pub fn new_block(&mut self) -> IOResult<u64> {
         for (i, group) in self.groups.iter_mut().enumerate() {
             if let Ok(count) = group.new_block() {
+                self.sb.used_blocks += 1;
+                self.sb.real_used_blocks += 1;
                 return Ok(data_block_relative_to_absolute!(i as u64, count));
             }
         }
@@ -92,8 +94,13 @@ impl Filesystem {
     }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
+        if self.is_multireference(count) {
+            self.sb.real_used_blocks -= 1;
+        }
+
         let group = (count as usize - 1) / GPOUP_SIZE;
         self.groups[group].release_block((count - 1) % GPOUP_SIZE as u64);
+        self.sb.used_blocks -= 1;
     }
     /** Load data block */
     pub fn set_data_block<D>(
@@ -111,10 +118,10 @@ impl Filesystem {
     }
     pub fn is_multireference(&self, count: u64) -> bool {
         let group = (count as usize - 1) / GPOUP_SIZE;
-        let relative_count = (count as usize - 1) % GPOUP_SIZE;
-        self.groups[group].block_map[relative_count / (BLOCK_SIZE / 2)].counts
-            [relative_count % (BLOCK_SIZE / 2)]
-            > 1
+        let count = (count - 1) % GPOUP_SIZE as u64;
+        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
+        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
+        self.groups[group].block_map[block].counts[count] > 1
     }
     /** Dump data block */
     pub fn get_data_block<D>(&self, device: &mut D, count: u64) -> IOResult<[u8; BLOCK_SIZE]>
@@ -145,18 +152,17 @@ impl Filesystem {
         let subvol_mgr = self.sb.subvol_mgr;
         SubvolumeManager::new_subvolume(self, device, subvol_mgr)
     }
-    pub fn get_subvolume<D>(&self, device: &mut D, id: u64) -> Subvolume
+    pub fn get_subvolume<D>(&self, device: &mut D, id: u64) -> IOResult<Subvolume>
     where
         D: Read + Write + Seek,
     {
-        SubvolumeManager::get_subvolume(self, device, self.sb.subvol_mgr, id).unwrap()
+        SubvolumeManager::get_subvolume(self, device, self.sb.subvol_mgr, id)
     }
-    pub fn get_default_subvolume<D>(&self, device: &mut D) -> Subvolume
+    pub fn get_default_subvolume<D>(&self, device: &mut D) -> IOResult<Subvolume>
     where
         D: Read + Write + Seek,
     {
         SubvolumeManager::get_subvolume(self, device, self.sb.subvol_mgr, self.sb.default_subvol)
-            .unwrap()
     }
     /** Create a snapshot */
     pub fn create_snapshot<D>(&mut self, device: &mut D, id: u64) -> IOResult<u64>

@@ -1,7 +1,7 @@
 use crate::block::*;
 use crate::btree::BtreeNode;
 use crate::dir::Directory;
-use crate::inode::{INode, ACL_SYMBOLLINK};
+use crate::inode::{INode, ACL_FILE, ACL_SYMBOLLINK, INODE_PER_GROUP};
 use crate::subvol::Subvolume;
 use crate::Filesystem;
 
@@ -146,16 +146,39 @@ impl File {
     where
         D: Read + Write + Seek,
     {
+        /* check if the inode is multiple referenced */
+        let inode_group = subvol
+            .btree
+            .lookup(
+                fs,
+                device,
+                self.inode_count / INODE_PER_GROUP as u64,
+                subvol.entry.inode_tree_depth as usize,
+            )
+            .unwrap();
+        if fs.is_multireference(inode_group) {
+            self.inode_count = copy_by_inode(fs, subvol, device, self.inode_count)?;
+            let inode_group = INoddeGroup::load(fs.get_data_block(device, inode_group)?);
+            for (i, inode) in inode_group.inodes.iter().enumerate() {
+                if !inode.is_empty_inode() {
+                    clone_by_inode(
+                        fs,
+                        subvol,
+                        device,
+                        self.inode_count - (self.inode_count % INODE_PER_GROUP as u64) + i as u64,
+                    )?;
+                }
+            }
+        }
+
         while !data.is_empty() {
             let block_count = offset / BLOCK_SIZE as u64; // the block count to be write
             let block_offset = offset % BLOCK_SIZE as u64; // the relative offset to the block
 
-            if let Some(block) = self.btree_root.offset_lookup(
-                fs,
-                device,
-                block_count,
-                self.inode.btree_depth as usize,
-            ) {
+            if let Some(block) =
+                self.btree_root
+                    .lookup(fs, device, block_count, self.inode.btree_depth as usize)
+            {
                 let written_size = std::cmp::min(data.len(), BLOCK_SIZE - block_offset as usize);
                 let mut data_block = fs.get_data_block(device, block)?;
 
@@ -164,7 +187,7 @@ impl File {
 
                 if fs.is_multireference(block) {
                     let new_block = fs.block_copy_out(device, block)?;
-                    self.btree_root.offset_modify(
+                    self.btree_root.modify(
                         fs,
                         device,
                         block_count,
@@ -185,8 +208,8 @@ impl File {
                 offset += written_size as u64;
             } else {
                 let written_size = std::cmp::min(data.len(), BLOCK_SIZE);
-                let data_block_count = fs.new_block().unwrap();
-                self.inode.btree_depth = self.btree_root.offset_insert(
+                let data_block_count = fs.new_block()?;
+                self.inode.btree_depth = self.btree_root.insert(
                     fs,
                     device,
                     block_count,
@@ -231,7 +254,7 @@ impl File {
             let block_count = offset / BLOCK_SIZE as u64; // the block count to be write
             let block_offset = offset % BLOCK_SIZE as u64; // the relative offset to the block
             if let Some(block) =
-                btree_root.offset_lookup(fs, device, block_count, self.inode.btree_depth as usize)
+                btree_root.lookup(fs, device, block_count, self.inode.btree_depth as usize)
             {
                 let block = fs.get_data_block(device, block)?;
                 let written_size = std::cmp::min(size as usize, BLOCK_SIZE - block_offset as usize);
@@ -291,7 +314,7 @@ impl File {
             for i in start_block..end_block {
                 self.inode.btree_depth =
                     self.btree_root
-                        .offset_remove(fs, device, i, self.inode.btree_depth as usize)?
+                        .remove(fs, device, i, self.inode.btree_depth as usize)?
                         as u8;
             }
             self.inode.size = size;
@@ -334,19 +357,18 @@ impl File {
 }
 
 /** Create a file and return the inode count */
-pub fn create<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D) -> Option<u64>
+pub fn create<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
-    let inode_count = subvol.new_inode(fs, device).unwrap();
-    let mut inode = subvol.get_inode(fs, device, inode_count).unwrap();
-    let btree_root = fs.new_block().unwrap();
+    let inode_count = subvol.new_inode(fs, device)?;
+    let mut inode = subvol.get_inode(fs, device, inode_count)?;
+    let btree_root = BtreeNode::allocate_on_block(fs, device)?;
     inode.btree_root = btree_root;
-    let btree = BtreeNode::default();
-    fs.set_data_block(device, btree_root, btree.dump()).unwrap();
-    subvol.set_inode(fs, device, inode_count, inode).unwrap();
+    inode.permission |= ACL_FILE;
+    subvol.set_inode(fs, device, inode_count, inode)?;
 
-    Some(inode_count)
+    Ok(inode_count)
 }
 
 /** Create a symbol link and return the inode count */
@@ -415,14 +437,29 @@ where
     let new_inode_count = subvol.new_inode(fs, device).unwrap();
     let mut new_inode = INode::default();
 
-    let mut btree_root = BtreeNode::new(
-        inode.btree_root,
-        &fs.get_data_block(device, inode.btree_root)?,
-    );
-    btree_root.clone_tree(fs, device, inode.btree_depth as usize);
+    clone_by_inode(fs, subvol, device, inode_count)?;
     new_inode.size = inode.size;
     new_inode.btree_root = inode.btree_root;
     new_inode.btree_depth = inode.btree_depth;
     subvol.set_inode(fs, device, new_inode_count, new_inode)?;
     Ok(new_inode_count)
+}
+
+/** Clone a file, do not allocate inode */
+pub fn clone_by_inode<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+    inode_count: u64,
+) -> IOResult<()>
+where
+    D: Read + Write + Seek,
+{
+    let inode = subvol.get_inode(fs, device, inode_count).unwrap();
+    let mut btree_root = BtreeNode::new(
+        inode.btree_root,
+        &fs.get_data_block(device, inode.btree_root)?,
+    );
+    btree_root.clone_tree(fs, device, inode.btree_depth as usize);
+    Ok(())
 }

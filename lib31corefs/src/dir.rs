@@ -191,18 +191,15 @@ impl Directory {
 }
 
 /** Create a directory and return the inode count */
-pub fn create<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D) -> Option<u64>
+pub fn create<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
-    if let Some(inode_count) = crate::file::create(fs, subvol, device) {
-        let mut inode = subvol.get_inode(fs, device, inode_count).unwrap();
-        inode.permission |= ACL_DIRECTORY;
-        subvol.set_inode(fs, device, inode_count, inode).unwrap();
-        Some(inode_count)
-    } else {
-        None
-    }
+    let inode_count = crate::file::create(fs, subvol, device)?;
+    let mut inode = subvol.get_inode(fs, device, inode_count)?;
+    inode.permission |= ACL_DIRECTORY;
+    subvol.set_inode(fs, device, inode_count, inode)?;
+    Ok(inode_count)
 }
 
 /** Remove a directory */

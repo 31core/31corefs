@@ -1,7 +1,7 @@
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
 
-use crate::block::{Block, BLOCK_SIZE};
+use crate::block::*;
 use crate::btree::BtreeNode;
 use crate::inode::{INode, INODE_PER_GROUP, INODE_SIZE};
 use crate::Filesystem;
@@ -109,22 +109,30 @@ impl SubvolumeManager {
             }
         }
     }
-    fn get_subvol_internal<D>(&self, fs: &Filesystem, device: &mut D, id: u64) -> Option<Subvolume>
+    fn get_subvol_internal<D>(
+        &self,
+        fs: &Filesystem,
+        device: &mut D,
+        id: u64,
+    ) -> IOResult<Subvolume>
     where
         D: Write + Read + Seek,
     {
         for entry in &self.entries {
             if entry.id == id {
-                return Some(Subvolume {
+                return Ok(Subvolume {
                     entry: *entry,
                     btree: BtreeNode::new(
                         entry.inode_tree_root,
-                        &fs.get_data_block(device, entry.inode_tree_root).unwrap(),
+                        &fs.get_data_block(device, entry.inode_tree_root)?,
                     ),
                 });
             }
         }
-        None
+        Err(Error::new(
+            ErrorKind::NotFound,
+            format!("No such subvolume '{id}'"),
+        ))
     }
     /** Get a subvolume */
     pub fn get_subvolume<D>(
@@ -132,18 +140,22 @@ impl SubvolumeManager {
         device: &mut D,
         mut mgr_block_count: u64,
         id: u64,
-    ) -> Option<Subvolume>
+    ) -> IOResult<Subvolume>
     where
         D: Write + Read + Seek,
     {
         loop {
             let mgr = Self::load(fs.get_data_block(device, mgr_block_count).unwrap());
-            if let Some(subvol) = mgr.get_subvol_internal(fs, device, id) {
-                return Some(subvol);
-            } else if mgr.next != 0 {
-                mgr_block_count = mgr.next;
-            } else {
-                return None;
+
+            match mgr.get_subvol_internal(fs, device, id) {
+                Ok(subvol) => return Ok(subvol),
+                Err(err) => {
+                    if mgr.next != 0 {
+                        mgr_block_count = mgr.next;
+                    } else {
+                        return Err(err);
+                    }
+                }
             }
         }
     }
@@ -191,8 +203,8 @@ impl SubvolumeManager {
                 if mgr.entries.len() < SUBVOLUMES {
                     let entry = SubvolumeEntry {
                         id: Self::generate_new_id(fs, device, mgr_block_count),
-                        inode_tree_root: fs.new_block()?,
-                        inode_alloc_block: fs.new_block()?,
+                        inode_tree_root: BtreeNode::allocate_on_block(fs, device)?,
+                        inode_alloc_block: AvailableInodeManager::allocate_on_block(fs, device)?,
                         ..Default::default()
                     };
                     let subvol_id = entry.id;
@@ -356,7 +368,7 @@ impl AvailableInodeManager {
             let mut allocator =
                 AvailableInodeManager::load(fs.get_data_block(device, allocator_count)?);
             if allocator.inodes.len() == BLOCK_SIZE / 8 - 2 {
-                let new_allocator_count = fs.new_block()?;
+                let new_allocator_count = Self::allocate_on_block(fs, device)?;
                 allocator.next = new_allocator_count;
                 allocator.sync(device, allocator_count)?;
                 allocator_count = new_allocator_count;
@@ -442,9 +454,8 @@ impl AvailableInodeManager {
 
 #[derive(Default, Debug)]
 pub struct Subvolume {
-    entry: SubvolumeEntry,
-
-    btree: BtreeNode,
+    pub entry: SubvolumeEntry,
+    pub btree: BtreeNode,
 }
 
 impl Subvolume {
@@ -475,11 +486,11 @@ impl Subvolume {
             )?;
             Ok(inode_count)
         } else {
-            let inode_group_block = fs.new_block()?;
+            let inode_group_block = INoddeGroup::allocate_on_block(fs, device)?;
             let inode_group_count =
                 self.btree
                     .find_unused(fs, device, self.entry.inode_tree_depth as usize);
-            self.entry.inode_tree_depth = self.btree.offset_insert(
+            self.entry.inode_tree_depth = self.btree.insert(
                 fs,
                 device,
                 inode_group_count,
@@ -508,7 +519,7 @@ impl Subvolume {
         let inode_num = inode as usize % INODE_PER_GROUP;
         let inode_group_block = self
             .btree
-            .offset_lookup(
+            .lookup(
                 fs,
                 device,
                 inode_group_count,
@@ -537,7 +548,7 @@ impl Subvolume {
 
         let inode_group_block = self
             .btree
-            .offset_lookup(
+            .lookup(
                 fs,
                 device,
                 inode_group_count,
@@ -545,13 +556,13 @@ impl Subvolume {
             )
             .unwrap();
 
-        let mut inode_block = fs.get_data_block(device, inode_group_block)?;
-        inode_block[INODE_SIZE * inode_num..INODE_SIZE * (inode_num + 1)]
-            .copy_from_slice(&inode.dump());
+        let mut inode_block = INoddeGroup::load(fs.get_data_block(device, inode_group_block)?);
+        inode_block.inodes[inode_num] = inode;
         if fs.is_multireference(inode_group_block) {
             let new_inode_group_block = fs.block_copy_out(device, inode_group_block)?;
-            fs.set_data_block(device, new_inode_group_block, inode_block)?;
-            self.btree.offset_modify(
+            inode_block.sync(device, new_inode_group_block)?;
+
+            self.btree.modify(
                 fs,
                 device,
                 inode_group_count,
@@ -559,8 +570,20 @@ impl Subvolume {
                 self.entry.inode_tree_depth as usize,
             )?;
             self.entry.inode_tree_root = self.btree.block_count;
+
+            let inode_group = INoddeGroup::load(fs.get_data_block(device, inode_group_block)?);
+            for (i, inode) in inode_group.inodes.iter().enumerate() {
+                if !inode.is_empty_inode() {
+                    crate::file::clone_by_inode(
+                        fs,
+                        self,
+                        device,
+                        inode_group_count * INODE_PER_GROUP as u64 + i as u64,
+                    )?;
+                }
+            }
         } else {
-            fs.set_data_block(device, inode_group_block, inode_block)?;
+            inode_block.sync(device, inode_group_block)?;
         }
         Ok(())
     }

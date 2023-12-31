@@ -5,6 +5,7 @@ pub const INODE_PER_GROUP: usize = BLOCK_SIZE / INODE_SIZE;
 
 pub const ACL_DIRECTORY: u16 = 1 << 15;
 pub const ACL_SYMBOLLINK: u16 = 1 << 14;
+pub const ACL_FILE: u16 = 1 << 13;
 
 #[derive(Default, Debug, Clone, Copy)]
 /**
@@ -76,6 +77,9 @@ impl INode {
         (self.permission & ACL_SYMBOLLINK) != 0
     }
     pub fn is_file(&self) -> bool {
-        !self.is_dir() && !self.is_symlink()
+        (self.permission & ACL_FILE) != 0
+    }
+    pub fn is_empty_inode(&self) -> bool {
+        !(self.is_dir() | self.is_symlink() | self.is_file())
     }
 }
