@@ -448,7 +448,12 @@ impl BtreeNode {
         }
     }
     /** Clone the full B-Tree */
-    pub fn clone_tree<D>(&mut self, fs: &mut Filesystem, device: &mut D, depth: usize)
+    pub fn clone_tree<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        depth: usize,
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
@@ -456,20 +461,18 @@ impl BtreeNode {
             for i in 0..self.len() {
                 fs.clone_block(self.values[i]);
             }
-            fs.clone_block(self.block_count);
         } else {
             for i in 0..self.keys.len() {
-                let mut child_node = Self::new(
-                    self.values[i],
-                    &fs.get_data_block(device, self.values[i]).unwrap(),
-                );
-                child_node.clone_tree(fs, device, depth - 1);
+                let mut child_node =
+                    Self::new(self.values[i], &fs.get_data_block(device, self.values[i])?);
+                child_node.clone_tree(fs, device, depth - 1)?;
             }
-            fs.clone_block(self.block_count);
         }
+        fs.clone_block(self.block_count);
+        Ok(())
     }
     /** Destroy the full B-Tree */
-    pub fn destroy<D>(&mut self, fs: &mut Filesystem, device: &mut D, depth: usize)
+    pub fn destroy<D>(&mut self, fs: &mut Filesystem, device: &mut D, depth: usize) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
@@ -477,17 +480,16 @@ impl BtreeNode {
             for i in 0..self.len() {
                 fs.release_block(self.values[i]);
             }
-            fs.release_block(self.block_count);
         } else {
             for i in 0..self.keys.len() {
-                let mut child_node = Self::new(
-                    self.values[i],
-                    &fs.get_data_block(device, self.values[i]).unwrap(),
-                );
-                child_node.destroy(fs, device, depth - 1);
+                let mut child_node =
+                    Self::new(self.values[i], &fs.get_data_block(device, self.values[i])?);
+                child_node.destroy(fs, device, depth - 1)?;
             }
-            fs.release_block(self.block_count);
         }
+
+        fs.release_block(self.block_count);
+        Ok(())
     }
     fn len(&self) -> usize {
         self.keys.len()

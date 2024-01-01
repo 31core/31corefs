@@ -94,7 +94,7 @@ impl Filesystem {
     }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
-        if self.is_multireference(count) {
+        if !self.is_multireference(count) {
             self.sb.real_used_blocks -= 1;
         }
 
@@ -118,10 +118,7 @@ impl Filesystem {
     }
     pub fn is_multireference(&self, count: u64) -> bool {
         let group = (count as usize - 1) / GPOUP_SIZE;
-        let count = (count - 1) % GPOUP_SIZE as u64;
-        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
-        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
-        self.groups[group].block_map[block].counts[count] > 1
+        self.groups[group].is_multireference((count - 1) % GPOUP_SIZE as u64)
     }
     /** Dump data block */
     pub fn get_data_block<D>(&self, device: &mut D, count: u64) -> IOResult<[u8; BLOCK_SIZE]>

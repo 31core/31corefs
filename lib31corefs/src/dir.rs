@@ -184,9 +184,23 @@ impl Directory {
     where
         D: Read + Write + Seek,
     {
-        let fd = Self::open(fs, subvol, device, path)?;
-        remove_by_inode(fs, subvol, device, fd.fd.get_inode())?;
-        Ok(())
+        let dir = Self::open(fs, subvol, device, path)?;
+
+        if dir.fd.get_size() > 0 {
+            Err(Error::new(
+                ErrorKind::PermissionDenied,
+                format!("'{}' is not empty.", path),
+            ))
+        } else {
+            remove_by_inode(fs, subvol, device, dir.fd.get_inode())?;
+            Directory::open(fs, subvol, device, &dir_name!(path))?.remove_file(
+                fs,
+                subvol,
+                device,
+                &base_name!(path),
+            )?;
+            Ok(())
+        }
     }
 }
 
@@ -197,7 +211,7 @@ where
 {
     let inode_count = crate::file::create(fs, subvol, device)?;
     let mut inode = subvol.get_inode(fs, device, inode_count)?;
-    inode.permission |= ACL_DIRECTORY;
+    inode.permission = ACL_DIRECTORY;
     subvol.set_inode(fs, device, inode_count, inode)?;
     Ok(inode_count)
 }

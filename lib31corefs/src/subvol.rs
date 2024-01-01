@@ -243,7 +243,7 @@ impl SubvolumeManager {
                     let mut root = crate::btree::BtreeNode::load(
                         fs.get_data_block(device, subvol.inode_tree_root)?,
                     );
-                    root.destroy(fs, device, subvol.inode_tree_depth as usize);
+                    root.destroy(fs, device, subvol.inode_tree_depth as usize)?;
 
                     AvailableInodeManager::destroy_blocks(fs, device, subvol.inode_alloc_block)?;
 
@@ -271,14 +271,14 @@ impl SubvolumeManager {
         D: Read + Write + Seek,
     {
         let subvol_id = Self::new_subvolume(fs, device, mgr_block_count)?;
-        let mut subvol = Self::get_subvolume(fs, device, mgr_block_count, id).unwrap();
+        let mut subvol = Self::get_subvolume(fs, device, mgr_block_count, id)?;
 
         subvol.entry.id = subvol_id;
         Self::set_subvolume(fs, device, mgr_block_count, subvol_id, subvol.entry)?;
 
         subvol
             .btree
-            .clone_tree(fs, device, subvol.entry.inode_tree_depth as usize); // clone inode tree
+            .clone_tree(fs, device, subvol.entry.inode_tree_depth as usize)?; // clone inode tree
         AvailableInodeManager::clone_blocks(fs, device, subvol.entry.inode_alloc_block)?;
         Ok(subvol_id)
     }
@@ -592,7 +592,7 @@ impl Subvolume {
     where
         D: Read + Write + Seek,
     {
-        AvailableInodeManager::remove_inode(fs, device, self.entry.inode_alloc_block, inode)?;
+        AvailableInodeManager::insert_inode(fs, device, self.entry.inode_alloc_block, inode)?;
         Ok(())
     }
 }

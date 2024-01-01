@@ -132,9 +132,23 @@ impl Block for SuperBlock {
 }
 
 impl SuperBlock {
+    /** Set filesystem label */
     pub fn set_label(&mut self, label: &str) {
         self.label = [0; 256];
         self.label[..label.len()].copy_from_slice(label.as_bytes());
+    }
+    /** Get filesystem label */
+    pub fn get_label(&self) -> String {
+        let mut label = String::new();
+
+        for ch in self.label {
+            if ch == 0 {
+                break;
+            }
+            label.push(ch as char);
+        }
+
+        label
     }
 }
 
@@ -181,6 +195,11 @@ impl BlockGroup {
         let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
         let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
         self.block_map[block].counts[count] -= 1;
+    }
+    pub fn is_multireference(&self, count: u64) -> bool {
+        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
+        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
+        self.block_map[block].counts[count] > 1
     }
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
     where
