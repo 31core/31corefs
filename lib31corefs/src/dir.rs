@@ -3,8 +3,10 @@ use crate::inode::ACL_DIRECTORY;
 use crate::subvol::Subvolume;
 use crate::Filesystem;
 use crate::{base_name, dir_name};
+
 use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Read, Result as IOResult, Seek, Write};
+use std::io::{Error, ErrorKind, Result as IOResult};
+use std::io::{Read, Seek, Write};
 
 pub struct Directory {
     fd: File,
@@ -21,7 +23,7 @@ impl Directory {
     where
         D: Read + Write + Seek,
     {
-        let inode_count = create(fs, subvol, device).unwrap();
+        let inode_count = create(fs, subvol, device)?;
 
         let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
         dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
@@ -101,7 +103,7 @@ impl Directory {
         D: Read + Write + Seek,
     {
         if self.list_dir(fs, device)?.get(file_name).is_some() {
-            return Err(std::io::Error::new(
+            return Err(Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("'{}' does already esist", file_name),
             ));

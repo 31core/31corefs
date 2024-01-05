@@ -1,6 +1,7 @@
 use crate::block::*;
 use crate::Filesystem;
-use std::io::{Read, Result as IOResult, Seek, Write};
+use std::io::Error;
+use std::io::{ErrorKind, Read, Result as IOResult, Seek, Write};
 
 const MAX_IDS: usize = BLOCK_SIZE / UNIT_SIZE;
 const UNIT_SIZE: usize = 8 + 8;
@@ -72,7 +73,7 @@ impl BtreeNode {
      * Return:
      * * node ID of the right node
      * * block count of the right node */
-    fn part<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> (u64, u64)
+    fn part<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<(u64, u64)>
     where
         D: Write + Read + Seek,
     {
@@ -81,12 +82,12 @@ impl BtreeNode {
             another.insert_item(0, self.keys.pop().unwrap(), self.values.pop().unwrap());
         }
 
-        let another_block = fs.new_block().unwrap();
+        let another_block = fs.new_block()?;
         another.block_count = another_block;
-        another.sync(device, another_block).unwrap();
-        self.sync(device, self.block_count).unwrap();
+        another.sync(device, another_block)?;
+        self.sync(device, self.block_count)?;
 
-        (*another.keys.first().unwrap(), another.block_count)
+        Ok((*another.keys.first().unwrap(), another.block_count))
     }
     /** Insert an offset into B-Tree */
     pub fn insert<D>(
@@ -109,7 +110,7 @@ impl BtreeNode {
                 left.push_item(self.keys[i], self.values[i]);
             }
 
-            let left_block = fs.new_block().unwrap();
+            let left_block = fs.new_block()?;
             left.block_count = left_block;
             left.sync(device, left_block)?;
 
@@ -145,7 +146,7 @@ impl BtreeNode {
 
             /* part into two child nodes */
             if self.len() > MAX_IDS {
-                return Ok(Some(self.part(fs, device)));
+                return Ok(Some(self.part(fs, device)?));
             } else {
                 self.sync(device, self.block_count)?;
             }
@@ -158,7 +159,7 @@ impl BtreeNode {
                     if fs.is_multireference(self.values[i]) {
                         self.values[i] = fs.block_copy_out(device, self.values[i])?;
                     }
-                    let child = fs.get_data_block(device, self.values[i]).unwrap();
+                    let child = fs.get_data_block(device, self.values[i])?;
                     let mut child_node = Self::new(self.values[i], &child);
 
                     /* if parted into tow sub trees */
@@ -169,7 +170,7 @@ impl BtreeNode {
                     }
 
                     if self.len() > MAX_IDS {
-                        return Ok(Some(self.part(fs, device)));
+                        return Ok(Some(self.part(fs, device)?));
                     } else {
                         self.sync(device, self.block_count)?;
                     }
@@ -239,7 +240,7 @@ impl BtreeNode {
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
-        offset: u64,
+        key: u64,
         depth: usize,
     ) -> IOResult<usize>
     where
@@ -248,7 +249,7 @@ impl BtreeNode {
         if fs.is_multireference(self.block_count) {
             self.block_count = fs.block_copy_out(device, self.block_count)?;
         }
-        self.remove_internal(fs, device, offset, depth)?;
+        self.remove_internal(fs, device, key, depth)?;
         if self.len() == 1 {
             let child = Self::new(self.values[0], &fs.get_data_block(device, self.values[0])?);
             self.clear();
@@ -265,7 +266,7 @@ impl BtreeNode {
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
-        offset: u64,
+        key: u64,
         depth: usize,
     ) -> IOResult<()>
     where
@@ -273,7 +274,7 @@ impl BtreeNode {
     {
         if depth > 0 {
             for i in 0..self.len() {
-                if i < self.len() - 1 && offset >= self.keys[i] && offset < self.keys[i + 1]
+                if i < self.len() - 1 && key >= self.keys[i] && key < self.keys[i + 1]
                     || i == self.len() - 1
                 {
                     if fs.is_multireference(self.values[i]) {
@@ -283,7 +284,7 @@ impl BtreeNode {
                     let child_block = fs.get_data_block(device, self.values[i])?;
                     let mut child_node = Self::new(self.values[i], &child_block);
 
-                    child_node.remove_internal(fs, device, offset, depth - 1)?;
+                    child_node.remove_internal(fs, device, key, depth - 1)?;
                     /* when child_node is empty, self.len() must be 0 */
                     if child_node.is_empty() {
                         self.remove_item(i);
@@ -353,7 +354,7 @@ impl BtreeNode {
         } else {
             /* find and remove */
             for i in 0..self.len() {
-                if self.keys[i] == offset {
+                if self.keys[i] == key {
                     self.remove_item(i);
                     self.sync(device, self.block_count)?;
                     break;
@@ -373,7 +374,7 @@ impl BtreeNode {
         device: &mut D,
         key: u64,
         depth: usize,
-    ) -> Option<u64>
+    ) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
@@ -382,7 +383,7 @@ impl BtreeNode {
                 if i < self.len() - 1 && key >= self.keys[i] && key < self.keys[i + 1]
                     || i == self.len() - 1
                 {
-                    let block = fs.get_data_block(device, self.values[i]).unwrap();
+                    let block = fs.get_data_block(device, self.values[i])?;
                     let child = Self::new(key, &block);
 
                     return child.lookup(fs, device, key, depth - 1);
@@ -391,60 +392,63 @@ impl BtreeNode {
         } else {
             for i in 0..self.keys.len() {
                 if key == self.keys[i] {
-                    return Some(self.values[i]);
+                    return Ok(self.values[i]);
                 }
             }
         }
-        None
+        Err(Error::new(
+            ErrorKind::NotFound,
+            format!("No such key '{}'.", key),
+        ))
     }
     fn find_unused_internal<D>(
         &self,
         fs: &mut Filesystem,
         device: &mut D,
         depth: usize,
-    ) -> (Option<u64>, Option<u64>)
+    ) -> IOResult<(Option<u64>, Option<u64>)>
     where
         D: Write + Read + Seek,
     {
         if depth > 0 {
             for i in 0..self.len() {
-                let block = fs.get_data_block(device, self.values[i]).unwrap();
+                let block = fs.get_data_block(device, self.values[i])?;
                 let child = Self::new(self.values[i], &block);
-                let result = child.find_unused_internal(fs, device, depth - 1);
+                let result = child.find_unused_internal(fs, device, depth - 1)?;
 
                 if let Some(id) = result.0 {
-                    return (Some(id), None);
+                    return Ok((Some(id), None));
                 } else if let Some(id) = result.1 {
                     if i < self.len() - 1 && id + 1 < self.keys[i + 1] || i == self.len() - 1 {
-                        return (Some(id + 1), None);
+                        return Ok((Some(id + 1), None));
                     }
                 }
             }
         } else if self.len() > 1 {
             for i in 0..self.len() - 1 {
                 if self.keys[i] + 1 < self.keys[i + 1] {
-                    return (Some(self.keys[i] + 1), None);
+                    return Ok((Some(self.keys[i] + 1), None));
                 }
             }
-            return (None, Some(*self.keys.last().unwrap() + 1));
+            return Ok((None, Some(*self.keys.last().unwrap() + 1)));
         } else if self.len() == 1 {
-            return (None, Some(*self.keys.last().unwrap() + 1));
+            return Ok((None, Some(*self.keys.last().unwrap() + 1)));
         }
-        (None, None)
+        Ok((None, None))
     }
     /** Find unused id */
-    pub fn find_unused<D>(&self, fs: &mut Filesystem, device: &mut D, depth: usize) -> u64
+    pub fn find_unused<D>(&self, fs: &mut Filesystem, device: &mut D, depth: usize) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
-        let result = self.find_unused_internal(fs, device, depth);
+        let result = self.find_unused_internal(fs, device, depth)?;
 
         if let Some(id) = result.0 {
-            id
+            Ok(id)
         } else if let Some(id) = result.1 {
-            id
+            Ok(id)
         } else {
-            0
+            Ok(0)
         }
     }
     /** Clone the full B-Tree */

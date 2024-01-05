@@ -99,10 +99,9 @@ impl SubvolumeManager {
             let mgr = Self::load(fs.get_data_block(device, mgr_block_count).unwrap());
 
             if mgr.next == 0 {
-                return if let Some(subvol) = mgr.entries.last() {
-                    subvol.id + 1
-                } else {
-                    0
+                return match mgr.entries.last() {
+                    Some(subvol) => subvol.id + 1,
+                    None => 0,
                 };
             } else {
                 mgr_block_count = mgr.next;
@@ -145,7 +144,7 @@ impl SubvolumeManager {
         D: Write + Read + Seek,
     {
         loop {
-            let mgr = Self::load(fs.get_data_block(device, mgr_block_count).unwrap());
+            let mgr = Self::load(fs.get_data_block(device, mgr_block_count)?);
 
             match mgr.get_subvol_internal(fs, device, id) {
                 Ok(subvol) => return Ok(subvol),
@@ -211,9 +210,8 @@ impl SubvolumeManager {
                     mgr.entries.push(entry);
                     mgr.sync(device, mgr_block_count)?;
 
-                    let mut subvol =
-                        Self::get_subvolume(fs, device, mgr_block_count, subvol_id).unwrap();
-                    crate::dir::create(fs, &mut subvol, device).unwrap();
+                    let mut subvol = Self::get_subvolume(fs, device, mgr_block_count, subvol_id)?;
+                    crate::dir::create(fs, &mut subvol, device)?;
                     return Ok(subvol_id);
                 } else {
                     let new_mgr_id = fs.new_block()?;
@@ -367,6 +365,8 @@ impl AvailableInodeManager {
         loop {
             let mut allocator =
                 AvailableInodeManager::load(fs.get_data_block(device, allocator_count)?);
+
+            /* this block is full */
             if allocator.inodes.len() == BLOCK_SIZE / 8 - 2 {
                 let new_allocator_count = Self::allocate_on_block(fs, device)?;
                 allocator.next = new_allocator_count;
@@ -382,6 +382,37 @@ impl AvailableInodeManager {
             }
         }
     }
+    fn modify_next_pointer<D>(
+        fs: &mut Filesystem,
+        device: &mut D,
+        mut allocator_count: u64,
+        pointer: u64,
+        allocator_chain: &[u64],
+    ) -> IOResult<()>
+    where
+        D: Write + Read + Seek,
+    {
+        let mut allocator =
+            AvailableInodeManager::load(fs.get_data_block(device, allocator_count)?);
+        allocator.next = pointer;
+
+        if fs.is_multireference(allocator_count) {
+            allocator_count = fs.block_copy_out(device, allocator_count)?;
+
+            if !allocator_chain.is_empty() {
+                Self::modify_next_pointer(
+                    fs,
+                    device,
+                    *allocator_chain.last().unwrap(),
+                    allocator_count,
+                    &allocator_chain[..allocator_chain.len() - 1],
+                )?;
+            }
+        }
+        allocator.sync(device, allocator_count)?;
+
+        Ok(())
+    }
     /** Recursively remove an inode */
     pub fn remove_inode<D>(
         fs: &mut Filesystem,
@@ -392,19 +423,47 @@ impl AvailableInodeManager {
     where
         D: Write + Read + Seek,
     {
+        let mut allocator_chain = Vec::new();
         loop {
             let mut allocator =
                 AvailableInodeManager::load(fs.get_data_block(device, allocator_count)?);
             for (i, this_inode) in allocator.inodes.iter().enumerate() {
                 if *this_inode == inode {
-                    if fs.is_multireference(allocator_count) {
-                        allocator_count = fs.block_copy_out(device, allocator_count)?;
-                    }
                     allocator.inodes.remove(i);
-                    allocator.sync(device, allocator_count)?;
+
+                    /* when this allocator is empty, then release this block */
+                    if allocator.inodes.is_empty() {
+                        /* modify the pointer of last allocator */
+                        if !allocator_chain.is_empty() {
+                            Self::modify_next_pointer(
+                                fs,
+                                device,
+                                *allocator_chain.last().unwrap(),
+                                allocator_count,
+                                &allocator_chain[..allocator_chain.len() - 1],
+                            )?;
+                        }
+                        fs.release_block(allocator_count);
+                    } else {
+                        if fs.is_multireference(allocator_count) {
+                            allocator_count = fs.block_copy_out(device, allocator_count)?;
+
+                            if !allocator_chain.is_empty() {
+                                Self::modify_next_pointer(
+                                    fs,
+                                    device,
+                                    *allocator_chain.last().unwrap(),
+                                    allocator_count,
+                                    &allocator_chain,
+                                )?;
+                            }
+                        }
+                        allocator.sync(device, allocator_count)?;
+                    }
                     return Ok(());
                 }
             }
+            allocator_chain.push(allocator_count);
             allocator_count = allocator.next;
         }
     }
@@ -489,7 +548,7 @@ impl Subvolume {
             let inode_group_block = INoddeGroup::allocate_on_block(fs, device)?;
             let inode_group_count =
                 self.btree
-                    .find_unused(fs, device, self.entry.inode_tree_depth as usize);
+                    .find_unused(fs, device, self.entry.inode_tree_depth as usize)?;
             self.entry.inode_tree_depth = self.btree.insert(
                 fs,
                 device,
@@ -517,15 +576,12 @@ impl Subvolume {
     {
         let inode_group_count = inode / INODE_PER_GROUP as u64;
         let inode_num = inode as usize % INODE_PER_GROUP;
-        let inode_group_block = self
-            .btree
-            .lookup(
-                fs,
-                device,
-                inode_group_count,
-                self.entry.inode_tree_depth as usize,
-            )
-            .unwrap();
+        let inode_group_block = self.btree.lookup(
+            fs,
+            device,
+            inode_group_count,
+            self.entry.inode_tree_depth as usize,
+        )?;
         let inode_block = fs.get_data_block(device, inode_group_block)?;
         Ok(INode::load(
             inode_block[INODE_SIZE * inode_num..INODE_SIZE * (inode_num + 1)]

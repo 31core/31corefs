@@ -9,7 +9,7 @@
 * Subvolume
 * Snapshot
 
-## lib31core
+## lib31corefs
 
 Core library to access 31corefs.
 
