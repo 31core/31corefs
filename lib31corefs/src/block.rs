@@ -1,11 +1,14 @@
 use crate::inode::*;
-use std::io::{Error, ErrorKind, Read, Result as IOResult, Seek, SeekFrom, Write};
+use std::{
+    fmt::Debug,
+    io::{Error, ErrorKind, Read, Result as IOResult, Seek, SeekFrom, Write},
+};
 
 pub const GPOUP_SIZE: usize = BLOCK_MAP_SIZE + DATA_BLOCK_PER_GROUP;
 
 pub const BLOCK_SIZE: usize = 4096;
-pub const DATA_BLOCK_PER_GROUP: usize = BLOCK_MAP_SIZE * (BLOCK_SIZE / 2);
-pub const BLOCK_MAP_SIZE: usize = 32;
+pub const DATA_BLOCK_PER_GROUP: usize = BLOCK_MAP_SIZE * BLOCK_SIZE * 8;
+pub const BLOCK_MAP_SIZE: usize = 1;
 
 #[macro_export]
 macro_rules! data_block_relative_to_absolute {
@@ -14,11 +17,15 @@ macro_rules! data_block_relative_to_absolute {
     };
 }
 
-#[macro_export]
-macro_rules! inode_table_relative_to_absolute {
-    ($group_count: expr, $count: expr) => {
-        1 + $group_count * GPOUP_SIZE as u64 + (INODE_BITMAP_SIZE + BLOCK_MAP_SIZE) as u64 + $count
-    };
+/** Copy out a mutiple referenced data block */
+pub fn block_copy_out<D>(fs: &mut crate::Filesystem, device: &mut D, count: u64) -> IOResult<u64>
+where
+    D: Read + Write + Seek,
+{
+    let block = fs.get_data_block(device, count)?;
+    let new_block = fs.new_block()?;
+    fs.set_data_block(device, new_block, block)?;
+    Ok(new_block)
 }
 
 pub fn load_block<D>(device: &mut D, block_count: u64) -> IOResult<[u8; BLOCK_SIZE]>
@@ -32,7 +39,7 @@ where
     Ok(block)
 }
 
-pub trait Block: Default {
+pub trait Block: Default + Debug {
     /** Load from bytes */
     fn load(bytes: [u8; BLOCK_SIZE]) -> Self;
     /** Dump to bytes */
@@ -155,7 +162,7 @@ impl SuperBlock {
 #[derive(Default, Debug, Clone)]
 pub struct BlockGroup {
     pub group_count: u64,
-    pub block_map: [BlockMapBlock; BLOCK_MAP_SIZE],
+    pub block_map: [BitmapBlock; BLOCK_MAP_SIZE],
 }
 
 impl BlockGroup {
@@ -164,7 +171,7 @@ impl BlockGroup {
         D: Read + Write + Seek,
     {
         for i in 0..BLOCK_MAP_SIZE as u64 {
-            self.block_map[i as usize] = BlockMapBlock::load(load_block(
+            self.block_map[i as usize] = BitmapBlock::load(load_block(
                 device,
                 GPOUP_SIZE as u64 * self.group_count + 1 + i,
             )?);
@@ -175,10 +182,10 @@ impl BlockGroup {
     /** Allocate a data block */
     pub fn new_block(&mut self) -> IOResult<u64> {
         for block in 0..BLOCK_MAP_SIZE {
-            for count in 0..BLOCK_SIZE / 2 {
-                if self.block_map[block].counts[count] == 0 {
-                    self.block_map[block].counts[count] = 1;
-                    return Ok((block * (BLOCK_SIZE / 2) + count) as u64);
+            for count in 0..BLOCK_SIZE * 8 {
+                if !self.block_map[block].get_used(count as u64) {
+                    self.block_map[block].set_used(count as u64);
+                    return Ok((block * BLOCK_SIZE * 8 + count) as u64);
                 }
             }
         }
@@ -186,20 +193,15 @@ impl BlockGroup {
     }
     /** Clone a data block */
     pub fn clone_block(&mut self, count: u64) {
-        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
-        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
-        self.block_map[block].counts[count] += 1;
+        let block = (count as usize - BLOCK_MAP_SIZE) / (BLOCK_SIZE * 8);
+        let count = (count as usize - BLOCK_MAP_SIZE) % (BLOCK_SIZE * 8);
+        self.block_map[block].get_used(count as u64);
     }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
-        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
-        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
-        self.block_map[block].counts[count] -= 1;
-    }
-    pub fn is_multireference(&self, count: u64) -> bool {
-        let block = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) / (BLOCK_SIZE / 2);
-        let count = (count as usize - (GPOUP_SIZE - DATA_BLOCK_PER_GROUP)) % (BLOCK_SIZE / 2);
-        self.block_map[block].counts[count] > 1
+        let block = (count as usize - BLOCK_MAP_SIZE) / (BLOCK_SIZE * 8);
+        let count = (count as usize - BLOCK_MAP_SIZE) % (BLOCK_SIZE * 8);
+        self.block_map[block].set_unused(count as u64);
     }
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
     where
@@ -269,49 +271,6 @@ impl BitmapBlock {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct BlockMapBlock {
-    pub counts: [u16; BLOCK_SIZE / 2],
-}
-
-impl Default for BlockMapBlock {
-    fn default() -> Self {
-        Self {
-            counts: [0; BLOCK_SIZE / 2],
-        }
-    }
-}
-
-impl Block for BlockMapBlock {
-    fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
-        let mut block = Self::default();
-
-        for i in 0..BLOCK_SIZE / 2 {
-            block.counts[i] = u16::from_be_bytes(bytes[2 * i..2 * i + 2].try_into().unwrap());
-        }
-
-        block
-    }
-    fn dump(&self) -> [u8; BLOCK_SIZE] {
-        let mut bytes = [0; BLOCK_SIZE];
-
-        for i in 0..BLOCK_SIZE / 2 {
-            bytes[2 * i..2 * i + 2].copy_from_slice(&self.counts[i].to_be_bytes());
-        }
-
-        bytes
-    }
-}
-
-impl BlockMapBlock {
-    pub fn get_count(&mut self, offset: usize) -> u16 {
-        self.counts[offset]
-    }
-    pub fn set_count(&mut self, offset: usize, count: u16) {
-        self.counts[offset] = count;
-    }
-}
-
 #[derive(Debug)]
 pub struct INodeBlock {
     pub inodes: [INode; BLOCK_SIZE / INODE_SIZE],
@@ -325,36 +284,12 @@ impl Default for INodeBlock {
     }
 }
 
-impl Block for INodeBlock {
-    fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
-        let mut block = Self::default();
-
-        for i in 0..BLOCK_SIZE / INODE_SIZE {
-            block.inodes[i] = INode::load(
-                bytes[INODE_SIZE * i..INODE_SIZE * (i + 1)]
-                    .try_into()
-                    .unwrap(),
-            );
-        }
-
-        block
-    }
-    fn dump(&self) -> [u8; BLOCK_SIZE] {
-        let mut bytes = [0; BLOCK_SIZE];
-
-        for i in 0..BLOCK_SIZE / INODE_SIZE {
-            bytes[INODE_SIZE * i..INODE_SIZE * (i + 1)].copy_from_slice(&self.inodes[i].dump());
-        }
-
-        bytes
-    }
-}
-
-pub struct INoddeGroup {
+#[derive(Debug)]
+pub struct INodeGroup {
     pub inodes: [INode; INODE_PER_GROUP],
 }
 
-impl Default for INoddeGroup {
+impl Default for INodeGroup {
     fn default() -> Self {
         Self {
             inodes: [INode::default(); INODE_PER_GROUP],
@@ -362,7 +297,7 @@ impl Default for INoddeGroup {
     }
 }
 
-impl Block for INoddeGroup {
+impl Block for INodeGroup {
     fn dump(&self) -> [u8; BLOCK_SIZE] {
         let mut bytes = [0; BLOCK_SIZE];
 

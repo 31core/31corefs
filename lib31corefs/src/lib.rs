@@ -14,7 +14,7 @@ use subvol::{Subvolume, SubvolumeManager};
 pub const FS_MAGIC_HEADER: [u8; 4] = [0x31, 0xc0, 0x8e, 0xf5];
 pub const FS_VERSION: u8 = 1;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Filesystem {
     pub sb: SuperBlock,
     pub subvol_mgr: SubvolumeManager,
@@ -94,10 +94,6 @@ impl Filesystem {
     }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
-        if !self.is_multireference(count) {
-            self.sb.real_used_blocks -= 1;
-        }
-
         let group = (count as usize - 1) / GPOUP_SIZE;
         self.groups[group].release_block((count - 1) % GPOUP_SIZE as u64);
         self.sb.used_blocks -= 1;
@@ -115,10 +111,6 @@ impl Filesystem {
         device.seek(SeekFrom::Start(count * BLOCK_SIZE as u64))?;
         device.write_all(&block)?;
         Ok(())
-    }
-    pub fn is_multireference(&self, count: u64) -> bool {
-        let group = (count as usize - 1) / GPOUP_SIZE;
-        self.groups[group].is_multireference((count - 1) % GPOUP_SIZE as u64)
     }
     /** Dump data block */
     pub fn get_data_block<D>(&self, device: &mut D, count: u64) -> IOResult<[u8; BLOCK_SIZE]>

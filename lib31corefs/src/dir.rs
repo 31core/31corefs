@@ -108,9 +108,7 @@ impl Directory {
                 format!("'{}' does already esist", file_name),
             ));
         }
-        let mut dir_data = vec![0; self.fd.get_size() as usize];
-        self.fd
-            .read(fs, device, 0, &mut dir_data, self.fd.get_size())?;
+        let mut dir_data = Vec::new();
 
         dir_data.extend(inode.to_be_bytes());
         dir_data.push(file_name.len() as u8);
