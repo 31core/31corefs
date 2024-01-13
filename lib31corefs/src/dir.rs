@@ -49,12 +49,12 @@ impl Directory {
         };
 
         for file in path {
-            let dirs = dir.list_dir(fs, device).unwrap();
+            let dirs = dir.list_dir(fs, subvol, device).unwrap();
             let inode_count = *dirs.get(&file.to_string_lossy().to_string()).unwrap();
             let inode = subvol.get_inode(fs, device, inode_count)?;
             if inode.is_symlink() {
-                let symlink = File::open_by_inode(fs, subvol, device, inode_count)?;
-                let original_path = symlink.read_link(fs, device)?;
+                let mut symlink = File::open_by_inode(fs, subvol, device, inode_count)?;
+                let original_path = symlink.read_link(fs, subvol, device)?;
                 return Self::open(fs, subvol, device, &original_path);
             } else if !inode.is_dir() {
                 return Err(Error::from(ErrorKind::PermissionDenied));
@@ -66,7 +66,12 @@ impl Directory {
 
         Ok(dir)
     }
-    pub fn list_dir<D>(&self, fs: &mut Filesystem, device: &mut D) -> IOResult<HashMap<String, u64>>
+    pub fn list_dir<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<HashMap<String, u64>>
     where
         D: Read + Write + Seek,
     {
@@ -74,7 +79,7 @@ impl Directory {
 
         let mut dir_data = vec![0; self.fd.get_size() as usize];
         self.fd
-            .read(fs, device, 0, &mut dir_data, self.fd.get_size())?;
+            .read(fs, subvol, device, 0, &mut dir_data, self.fd.get_size())?;
 
         let mut offset = 0;
         while offset < self.fd.get_size() as usize {
@@ -102,7 +107,7 @@ impl Directory {
     where
         D: Read + Write + Seek,
     {
-        if self.list_dir(fs, device)?.get(file_name).is_some() {
+        if self.list_dir(fs, subvol, device)?.get(file_name).is_some() {
             return Err(Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("'{}' does already esist", file_name),
@@ -132,7 +137,7 @@ impl Directory {
     {
         let mut dir_data = vec![0; self.fd.get_size() as usize];
         self.fd
-            .read(fs, device, 0, &mut dir_data, self.fd.get_size())?;
+            .read(fs, subvol, device, 0, &mut dir_data, self.fd.get_size())?;
 
         let mut offset = 0;
         while offset < self.fd.get_size() as usize {

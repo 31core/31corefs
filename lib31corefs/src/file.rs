@@ -84,19 +84,11 @@ impl File {
         Ok(Self {
             inode,
             inode_count,
-            btree_root: if inode.btree_depth == 0 {
-                BtreeNode::new(
-                    inode.btree_root,
-                    BtreeType::Leaf,
-                    &fs.get_data_block(device, inode.btree_root)?,
-                )
-            } else {
-                BtreeNode::new(
-                    inode.btree_root,
-                    BtreeType::Internal,
-                    &fs.get_data_block(device, inode.btree_root)?,
-                )
-            },
+            btree_root: BtreeNode::new(
+                inode.btree_root,
+                BtreeType::Leaf,
+                &fs.get_data_block(device, inode.btree_root)?,
+            ),
         })
     }
     /** Open file by absolute path */
@@ -110,14 +102,15 @@ impl File {
         D: Read + Write + Seek,
     {
         let inode_count = *Directory::open(fs, subvol, device, &dir_name!(path))?
-            .list_dir(fs, device)?
+            .list_dir(fs, subvol, device)?
             .get(&base_name!(path))
             .unwrap();
 
         let inode = subvol.get_inode(fs, device, inode_count)?;
 
         if inode.is_symlink() {
-            let path = Self::from_inode(fs, device, inode_count, inode)?.read_link(fs, device)?;
+            let path =
+                Self::from_inode(fs, device, inode_count, inode)?.read_link(fs, subvol, device)?;
             Self::open(fs, subvol, device, &path)
         } else {
             Self::open_by_inode(fs, subvol, device, inode_count)
@@ -137,19 +130,11 @@ impl File {
         Ok(Self {
             inode,
             inode_count,
-            btree_root: if inode.btree_depth == 0 {
-                BtreeNode::new(
-                    inode.btree_root,
-                    BtreeType::Leaf,
-                    &fs.get_data_block(device, inode.btree_root)?,
-                )
-            } else {
-                BtreeNode::new(
-                    inode.btree_root,
-                    BtreeType::Internal,
-                    &fs.get_data_block(device, inode.btree_root)?,
-                )
-            },
+            btree_root: BtreeNode::new(
+                inode.btree_root,
+                BtreeType::Leaf,
+                &fs.get_data_block(device, inode.btree_root)?,
+            ),
         })
     }
     /** Write data */
@@ -166,12 +151,7 @@ impl File {
     {
         let inode_group_count = self.inode_count / INODE_PER_GROUP as u64;
         /* check if the inode is multiple referenced */
-        let btree_query_result = subvol.btree.lookup(
-            fs,
-            device,
-            inode_group_count,
-            subvol.entry.inode_tree_depth as usize,
-        )?;
+        let btree_query_result = subvol.btree.lookup(fs, device, inode_group_count)?;
         let inode_group_block = btree_query_result.value;
         if btree_query_result.rc > 0 {
             let mut inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
@@ -187,13 +167,9 @@ impl File {
             }
             let new_inode_group_block = fs.new_block()?;
             inode_group.sync(device, new_inode_group_block)?;
-            subvol.btree.modify(
-                fs,
-                device,
-                inode_group_count,
-                new_inode_group_block,
-                subvol.entry.inode_tree_depth as usize,
-            )?;
+            subvol
+                .btree
+                .modify(fs, device, inode_group_count, new_inode_group_block)?;
             subvol.entry.inode_tree_root = subvol.btree.block_count;
             crate::subvol::SubvolumeManager::set_subvolume(
                 fs,
@@ -210,10 +186,7 @@ impl File {
             let written_size = std::cmp::min(data.len(), BLOCK_SIZE - block_offset as usize);
 
             /* data block has been allocated */
-            if let Ok(entry) =
-                self.btree_root
-                    .lookup(fs, device, block_count, self.inode.btree_depth as usize)
-            {
+            if let Ok(entry) = self.btree_root.lookup(fs, device, block_count) {
                 let block = entry.value;
                 let mut data_block = fs.get_data_block(device, block)?;
 
@@ -222,13 +195,7 @@ impl File {
 
                 if entry.rc > 0 {
                     let new_block = crate::block::block_copy_out(fs, device, block)?;
-                    self.btree_root.modify(
-                        fs,
-                        device,
-                        block_count,
-                        new_block,
-                        self.inode.btree_depth as usize,
-                    )?;
+                    self.btree_root.modify(fs, device, block_count, new_block)?;
                     self.inode.btree_root = self.btree_root.block_count;
                     fs.set_data_block(device, new_block, data_block)?;
                 } else {
@@ -236,13 +203,8 @@ impl File {
                 }
             } else {
                 let data_block_count = fs.new_block()?;
-                self.inode.btree_depth = self.btree_root.insert(
-                    fs,
-                    device,
-                    block_count,
-                    data_block_count,
-                    self.inode.btree_depth as usize,
-                )? as u8;
+                self.btree_root
+                    .insert(fs, device, block_count, data_block_count)?;
                 self.inode.btree_root = self.btree_root.block_count;
 
                 let mut block_data = [0; BLOCK_SIZE];
@@ -258,13 +220,16 @@ impl File {
             data = &data[written_size..];
             offset += written_size as u64;
         }
+
+        self.inode.update_mtime();
         subvol.set_inode(fs, device, self.inode_count, self.inode)?;
         Ok(())
     }
     /** Read from file */
     pub fn read<D>(
-        &self,
+        &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         mut offset: u64,
         mut data: &mut [u8],
@@ -273,26 +238,16 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        let btree_root = if self.inode.btree_depth == 0 {
-            BtreeNode::new(
-                self.inode.btree_root,
-                BtreeType::Leaf,
-                &fs.get_data_block(device, self.inode.btree_root)?,
-            )
-        } else {
-            BtreeNode::new(
-                self.inode.btree_root,
-                BtreeType::Internal,
-                &fs.get_data_block(device, self.inode.btree_root)?,
-            )
-        };
+        let btree_root = BtreeNode::new(
+            self.inode.btree_root,
+            BtreeType::Leaf,
+            &fs.get_data_block(device, self.inode.btree_root)?,
+        );
 
         loop {
             let block_count = offset / BLOCK_SIZE as u64; // the block count to be write
             let block_offset = offset % BLOCK_SIZE as u64; // the relative offset to the block
-            if let Ok(entry) =
-                btree_root.lookup(fs, device, block_count, self.inode.btree_depth as usize)
-            {
+            if let Ok(entry) = btree_root.lookup(fs, device, block_count) {
                 let block = entry.value;
                 let block = fs.get_data_block(device, block)?;
                 let written_size = std::cmp::min(size as usize, BLOCK_SIZE - block_offset as usize);
@@ -320,6 +275,9 @@ impl File {
                 }
             }
         }
+
+        self.inode.update_atime();
+        subvol.set_inode(fs, device, self.inode_count, self.inode)?;
         Ok(())
     }
     /** Adjust file size */
@@ -350,10 +308,7 @@ impl File {
             };
 
             for i in start_block..end_block {
-                self.inode.btree_depth =
-                    self.btree_root
-                        .remove(fs, device, i, self.inode.btree_depth as usize)?
-                        as u8;
+                self.btree_root.remove(fs, device, i)?;
             }
             self.inode.size = size;
             subvol.set_inode(fs, device, self.inode_count, self.inode)?;
@@ -367,7 +322,12 @@ impl File {
         self.inode_count
     }
     /** Read symbol link */
-    pub fn read_link<D>(&self, fs: &mut Filesystem, device: &mut D) -> IOResult<String>
+    pub fn read_link<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<String>
     where
         D: Read + Write + Seek,
     {
@@ -375,7 +335,7 @@ impl File {
             return Err(Error::new(ErrorKind::PermissionDenied, "Not a symbol link"));
         }
         let mut path = vec![0; self.get_size() as usize];
-        self.read(fs, device, 0, &mut path, self.get_size())?;
+        self.read(fs, subvol, device, 0, &mut path, self.get_size())?;
         Ok(String::from_utf8_lossy(&path).to_string())
     }
     /** Remove a regular file or a symbol link */
@@ -468,21 +428,13 @@ where
         inode.hlinks -= 1;
         subvol.set_inode(fs, device, inode_count, inode)?;
     } else {
-        let mut btree_root = if inode.btree_depth == 0 {
-            BtreeNode::new(
-                inode.btree_root,
-                BtreeType::Leaf,
-                &fs.get_data_block(device, inode.btree_root)?,
-            )
-        } else {
-            BtreeNode::new(
-                inode.btree_root,
-                BtreeType::Internal,
-                &fs.get_data_block(device, inode.btree_root)?,
-            )
-        };
+        let mut btree_root = BtreeNode::new(
+            inode.btree_root,
+            BtreeType::Leaf,
+            &fs.get_data_block(device, inode.btree_root)?,
+        );
 
-        btree_root.destroy(fs, device, inode.btree_depth as usize)?;
+        btree_root.destroy(fs, device)?;
         subvol.release_inode(fs, device, inode_count)?;
     }
     Ok(())
@@ -505,7 +457,6 @@ where
     clone_by_inode(fs, subvol, device, inode_count)?;
     new_inode.size = inode.size;
     new_inode.btree_root = inode.btree_root;
-    new_inode.btree_depth = inode.btree_depth;
     subvol.set_inode(fs, device, new_inode_count, new_inode)?;
     Ok(new_inode_count)
 }
@@ -521,19 +472,11 @@ where
     D: Read + Write + Seek,
 {
     let inode = subvol.get_inode(fs, device, inode_count)?;
-    let mut btree_root = if inode.btree_depth == 0 {
-        BtreeNode::new(
-            inode.btree_root,
-            BtreeType::Leaf,
-            &fs.get_data_block(device, inode.btree_root)?,
-        )
-    } else {
-        BtreeNode::new(
-            inode.btree_root,
-            BtreeType::Internal,
-            &fs.get_data_block(device, inode.btree_root)?,
-        )
-    };
-    btree_root.clone_tree(fs, device, inode.btree_depth as usize)?;
+    let mut btree_root = BtreeNode::new(
+        inode.btree_root,
+        BtreeType::Leaf,
+        &fs.get_data_block(device, inode.btree_root)?,
+    );
+    btree_root.clone_tree(fs, device)?;
     Ok(())
 }

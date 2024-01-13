@@ -86,13 +86,16 @@ impl BtreeEntry {
  * |Start|End|Description|
  * |-----|---|-----------|
  * |0    |2  |Count of entries|
- * |2    |8  |Reserved   |
+ * |2    |3  |Depth      |
+ * |3    |8  |Reserved   |
  * |8    |16 |Reference count|
  * |16   |4096|Entries   |
 */
 pub struct BtreeNode {
     pub block_count: u64,
     pub rc: u64,
+    /// only root node has this field
+    pub depth: u8,
     pub entries: Vec<BtreeEntry>,
     pub r#type: BtreeType,
 }
@@ -105,6 +108,7 @@ impl Block for BtreeNode {
         let mut block = [0; BLOCK_SIZE];
 
         block[0..2].copy_from_slice(&(self.entries.len() as u16).to_be_bytes());
+        block[2] = self.depth;
         block[8..16].copy_from_slice(&self.rc.to_be_bytes());
         let content = &mut block[ENTRY_START..];
 
@@ -125,12 +129,13 @@ impl BtreeNode {
     pub fn load_internal(bytes: [u8; BLOCK_SIZE]) -> Self {
         let mut node = Self {
             r#type: BtreeType::Internal,
+            depth: bytes[2],
+            rc: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
             ..Default::default()
         };
 
         let content = &bytes[ENTRY_START..];
         let entries = u16::from_be_bytes(bytes[0..2].try_into().unwrap()) as usize;
-        node.rc = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
 
         for i in 0..entries {
             let entry = BtreeEntry::load_internal(
@@ -158,9 +163,13 @@ impl BtreeNode {
         node
     }
     pub fn new(block_count: u64, node_type: BtreeType, block: &[u8; BLOCK_SIZE]) -> Self {
-        let mut node = match node_type {
-            BtreeType::Internal => Self::load_internal(*block),
-            BtreeType::Leaf => Self::load_leaf(*block),
+        let mut node = if block[2] > 0 {
+            Self::load_internal(*block)
+        } else {
+            match node_type {
+                BtreeType::Internal => Self::load_internal(*block),
+                BtreeType::Leaf => Self::load_leaf(*block),
+            }
         };
         node.block_count = block_count;
         node
@@ -194,20 +203,19 @@ impl BtreeNode {
     where
         D: Write + Read + Seek,
     {
-        let mut another = Self {
+        let mut next = Self {
             r#type: self.r#type,
+            block_count: fs.new_block()?,
             ..Default::default()
         };
         for _ in 0..self.entries.len() / 2 {
-            another.entries.insert(0, self.entries.pop().unwrap());
+            next.entries.insert(0, self.entries.pop().unwrap());
         }
 
-        let another_block = fs.new_block()?;
-        another.block_count = another_block;
-        another.sync(device, another_block)?;
+        next.sync(device, next.block_count)?;
         self.sync(device, self.block_count)?;
 
-        Ok((another.entries.first().unwrap().key, another.block_count))
+        Ok((next.entries.first().unwrap().key, next.block_count))
     }
     /** Insert an offset into B-Tree */
     pub fn insert<D>(
@@ -216,15 +224,22 @@ impl BtreeNode {
         device: &mut D,
         offset: u64,
         block: u64,
-        depth: usize,
-    ) -> IOResult<usize>
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
+        if self.depth == 0 {
+            self.r#type = BtreeType::Leaf;
+        } else {
+            self.r#type = BtreeType::Internal;
+        }
+
         self.cow_clone_node(fs, device)?;
 
-        if let Some((id, block)) = self.insert_internal(fs, device, offset, block, depth)? {
-            let mut left = if depth == 1 {
+        if let Some((id, block)) =
+            self.insert_internal(fs, device, offset, block, self.depth as usize)?
+        {
+            let mut left = if self.depth == 0 {
                 Self {
                     r#type: BtreeType::Leaf,
                     ..Default::default()
@@ -249,12 +264,13 @@ impl BtreeNode {
                 left_block,
             ));
             self.entries.push(BtreeEntry::new(id, block));
+            self.r#type = BtreeType::Internal;
             self.sync(device, self.block_count)?;
 
-            Ok(depth + 1)
-        } else {
-            Ok(depth)
+            self.depth += 1;
         }
+
+        Ok(())
     }
     /** Insert an id
      *
@@ -323,13 +339,18 @@ impl BtreeNode {
         device: &mut D,
         key: u64,
         value: u64,
-        depth: usize,
     ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
+        if self.depth == 0 {
+            self.r#type = BtreeType::Leaf;
+        } else {
+            self.r#type = BtreeType::Internal;
+        }
+
         self.cow_clone_node(fs, device)?;
-        self.modify_internal(fs, device, key, value, depth)?;
+        self.modify_internal(fs, device, key, value, self.depth as usize)?;
         Ok(())
     }
     fn modify_internal<D>(
@@ -376,20 +397,20 @@ impl BtreeNode {
         Ok(())
     }
     /** Remove an offset from B-Tree */
-    pub fn remove<D>(
-        &mut self,
-        fs: &mut Filesystem,
-        device: &mut D,
-        key: u64,
-        depth: usize,
-    ) -> IOResult<usize>
+    pub fn remove<D>(&mut self, fs: &mut Filesystem, device: &mut D, key: u64) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
+        if self.depth == 0 {
+            self.r#type = BtreeType::Leaf;
+        } else {
+            self.r#type = BtreeType::Internal;
+        }
+
         self.cow_clone_node(fs, device)?;
-        self.remove_internal(fs, device, key, depth)?;
+        self.remove_internal(fs, device, key, self.depth as usize)?;
         if self.entries.len() == 1 {
-            let mut child = if depth == 1 {
+            let mut child = if self.depth == 1 {
                 Self::new(
                     self.entries[0].value,
                     BtreeType::Leaf,
@@ -410,9 +431,10 @@ impl BtreeNode {
             child.cow_release_node(fs, device)?;
 
             self.sync(device, self.block_count)?;
-            return Ok(depth - 1);
+            self.depth -= 1;
         }
-        Ok(depth)
+
+        Ok(())
     }
     fn remove_internal<D>(
         &mut self,
@@ -541,7 +563,13 @@ impl BtreeNode {
      * Return:
      * 1: block count
      */
-    pub fn lookup<D>(
+    pub fn lookup<D>(&self, fs: &mut Filesystem, device: &mut D, key: u64) -> IOResult<BtreeEntry>
+    where
+        D: Write + Read + Seek,
+    {
+        self.lookup_internal(fs, device, key, self.depth as usize)
+    }
+    fn lookup_internal<D>(
         &self,
         fs: &mut Filesystem,
         device: &mut D,
@@ -565,7 +593,7 @@ impl BtreeNode {
                         Self::new(key, BtreeType::Internal, &block)
                     };
 
-                    return child.lookup(fs, device, key, depth - 1);
+                    return child.lookup_internal(fs, device, key, depth - 1);
                 }
             }
         } else {
@@ -622,11 +650,11 @@ impl BtreeNode {
         Ok((None, None))
     }
     /** Find unused id */
-    pub fn find_unused<D>(&self, fs: &mut Filesystem, device: &mut D, depth: usize) -> IOResult<u64>
+    pub fn find_unused<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
-        let result = self.find_unused_internal(fs, device, depth)?;
+        let result = self.find_unused_internal(fs, device, self.depth as usize)?;
 
         if let Some(id) = result.0 {
             Ok(id)
@@ -637,7 +665,20 @@ impl BtreeNode {
         }
     }
     /** Clone the full B-Tree */
-    pub fn clone_tree<D>(
+    pub fn clone_tree<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<()>
+    where
+        D: Write + Read + Seek,
+    {
+        if self.depth == 0 {
+            self.r#type = BtreeType::Leaf;
+        } else {
+            self.r#type = BtreeType::Internal;
+        }
+
+        self.clone_tree_internal(fs, device, self.depth as usize - 1)
+    }
+    /** Clone the full B-Tree */
+    fn clone_tree_internal<D>(
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
@@ -665,7 +706,7 @@ impl BtreeNode {
                         &fs.get_data_block(device, entry.value)?,
                     )
                 };
-                child_node.clone_tree(fs, device, depth - 1)?;
+                child_node.clone_tree_internal(fs, device, depth - 1)?;
             }
         }
         self.rc += 1;
@@ -673,7 +714,24 @@ impl BtreeNode {
         Ok(())
     }
     /** Destroy the full B-Tree */
-    pub fn destroy<D>(&mut self, fs: &mut Filesystem, device: &mut D, depth: usize) -> IOResult<()>
+    pub fn destroy<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<()>
+    where
+        D: Write + Read + Seek,
+    {
+        if self.depth == 0 {
+            self.r#type = BtreeType::Leaf;
+        } else {
+            self.r#type = BtreeType::Internal;
+        }
+
+        self.destroy_internal(fs, device, self.depth as usize)
+    }
+    fn destroy_internal<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        device: &mut D,
+        depth: usize,
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
@@ -700,7 +758,7 @@ impl BtreeNode {
                         &fs.get_data_block(device, self.entries[i].value)?,
                     )
                 };
-                child_node.destroy(fs, device, depth - 1)?;
+                child_node.destroy_internal(fs, device, depth - 1)?;
             }
         }
 

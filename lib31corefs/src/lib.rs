@@ -75,23 +75,6 @@ impl Filesystem {
         }
         Err(Error::new(ErrorKind::Other, "No enough block"))
     }
-    /** Copy out a mutiple referenced data block */
-    pub fn block_copy_out<D>(&mut self, device: &mut D, count: u64) -> IOResult<u64>
-    where
-        D: Read + Write + Seek,
-    {
-        let block = self.get_data_block(device, count)?;
-        let new_block = self.new_block().unwrap();
-        self.set_data_block(device, new_block, block)?;
-
-        self.release_block(count);
-        Ok(new_block)
-    }
-    /** Clone a data block */
-    pub fn clone_block(&mut self, count: u64) {
-        let group = (count as usize - 1) / GPOUP_SIZE;
-        self.groups[group].clone_block((count - 1) % GPOUP_SIZE as u64);
-    }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
         let group = (count as usize - 1) / GPOUP_SIZE;
