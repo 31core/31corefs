@@ -11,7 +11,7 @@
 
 ## lib31corefs
 
-Core library to access 31corefs.
+Core library to access 31corefs, without any platform-related code.
 
 ## Bugs & Reports
 

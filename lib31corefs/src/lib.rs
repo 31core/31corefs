@@ -80,6 +80,7 @@ impl Filesystem {
         let group = (count as usize - 1) / GPOUP_SIZE;
         self.groups[group].release_block((count - 1) % GPOUP_SIZE as u64);
         self.sb.used_blocks -= 1;
+        self.sb.real_used_blocks -= 1;
     }
     /** Load data block */
     pub fn set_data_block<D>(
@@ -143,4 +144,18 @@ impl Filesystem {
     {
         SubvolumeManager::create_snapshot(self, device, self.sb.subvol_mgr, id)
     }
+}
+
+pub fn is_file<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
+where
+    D: Read + Write + Seek,
+{
+    file::File::open(fs, subvol, device, path).is_ok()
+}
+
+pub fn is_dir<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
+where
+    D: Read + Write + Seek,
+{
+    dir::Directory::open(fs, subvol, device, path).is_ok()
 }

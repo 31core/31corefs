@@ -91,7 +91,7 @@ impl File {
             ),
         })
     }
-    /** Open file by absolute path */
+    /** Open regular file by absolute path */
     pub fn open<D>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
@@ -101,21 +101,36 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        let inode_count = *Directory::open(fs, subvol, device, &dir_name!(path))?
+        let inode_count = match Directory::open(fs, subvol, device, &dir_name!(path))?
             .list_dir(fs, subvol, device)?
             .get(&base_name!(path))
-            .unwrap();
+        {
+            Some(count) => *count,
+            None => {
+                return Err(Error::new(
+                    ErrorKind::NotFound,
+                    format!("No such file '{}'", path),
+                ))
+            }
+        };
 
         let inode = subvol.get_inode(fs, device, inode_count)?;
 
+        /* read link and open orignal file */
         if inode.is_symlink() {
-            let path =
+            let real_path =
                 Self::from_inode(fs, device, inode_count, inode)?.read_link(fs, subvol, device)?;
-            Self::open(fs, subvol, device, &path)
+            Self::open(fs, subvol, device, &real_path)
+        } else if inode.is_dir() {
+            Err(Error::new(
+                ErrorKind::Unsupported,
+                format!("'{}' is a directory.", path),
+            ))
         } else {
             Self::open_by_inode(fs, subvol, device, inode_count)
         }
     }
+    /** Open a file by inode count */
     pub fn open_by_inode<D>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
@@ -213,8 +228,9 @@ impl File {
 
                 fs.set_data_block(device, data_block_count, block_data)?;
             }
-            if offset + written_size as u64 > self.get_size() {
-                self.inode.size += offset + written_size as u64 - self.get_size();
+
+            if offset + written_size as u64 > self.inode.size {
+                self.inode.size += offset + written_size as u64 - self.inode.size;
             }
 
             data = &data[written_size..];
@@ -232,7 +248,7 @@ impl File {
         subvol: &mut Subvolume,
         device: &mut D,
         mut offset: u64,
-        mut data: &mut [u8],
+        mut buffer: &mut [u8],
         mut size: u64,
     ) -> IOResult<()>
     where
@@ -247,32 +263,29 @@ impl File {
         loop {
             let block_count = offset / BLOCK_SIZE as u64; // the block count to be write
             let block_offset = offset % BLOCK_SIZE as u64; // the relative offset to the block
+
+            let read_size;
             if let Ok(entry) = btree_root.lookup(fs, device, block_count) {
                 let block = entry.value;
                 let block = fs.get_data_block(device, block)?;
-                let written_size = std::cmp::min(size as usize, BLOCK_SIZE - block_offset as usize);
-                data[..written_size].copy_from_slice(
-                    &block[block_offset as usize..block_offset as usize + written_size],
+                read_size = std::cmp::min(size as usize, BLOCK_SIZE - block_offset as usize);
+                buffer[..read_size].copy_from_slice(
+                    &block[block_offset as usize..block_offset as usize + read_size],
                 );
-                if written_size < size as usize {
-                    offset += written_size as u64;
-                    size -= written_size as u64;
-                    data = &mut data[written_size as usize..];
-                } else {
-                    break;
-                }
+            }
+            /* section with unallocated data block in sparse file, fill zero bytes */
+            else {
+                read_size = std::cmp::min(size as usize, BLOCK_SIZE);
+
+                buffer[..read_size].copy_from_slice(&[0].repeat(read_size));
+            }
+
+            if read_size < size as usize {
+                offset += read_size as u64;
+                size -= read_size as u64;
+                buffer = &mut buffer[read_size..];
             } else {
-                let written_size = std::cmp::min(size as usize, BLOCK_SIZE);
-
-                data[..written_size as usize].copy_from_slice(&[0].repeat(written_size as usize));
-
-                if written_size < size as usize {
-                    offset += written_size as u64;
-                    size -= written_size as u64;
-                    data = &mut data[written_size as usize..];
-                } else {
-                    break;
-                }
+                break;
             }
         }
 
@@ -291,35 +304,34 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        if size > self.get_size() {
-            self.inode.size = size;
-            subvol.set_inode(fs, device, self.inode_count, self.inode)?;
-        } else {
+        /* reduce file size */
+        if size < self.inode.size {
             let start_block = if size % BLOCK_SIZE as u64 == 0 {
                 size / BLOCK_SIZE as u64 + 1
             } else {
                 size / BLOCK_SIZE as u64 + 2
             };
 
-            let end_block = if self.get_size() % BLOCK_SIZE as u64 == 0 {
-                self.get_size() / BLOCK_SIZE as u64
+            let end_block = if self.inode.size % BLOCK_SIZE as u64 == 0 {
+                self.inode.size / BLOCK_SIZE as u64
             } else {
-                self.get_size() / BLOCK_SIZE as u64 + 1
+                self.inode.size / BLOCK_SIZE as u64 + 1
             };
 
             for i in start_block..end_block {
                 self.btree_root.remove(fs, device, i)?;
             }
-            self.inode.size = size;
-            subvol.set_inode(fs, device, self.inode_count, self.inode)?;
         }
+        self.inode.size = size;
+        self.inode.update_mtime();
+        subvol.set_inode(fs, device, self.inode_count, self.inode)?;
         Ok(())
     }
-    pub fn get_size(&self) -> u64 {
-        self.inode.size
-    }
-    pub fn get_inode(&self) -> u64 {
+    pub fn get_inode_count(&self) -> u64 {
         self.inode_count
+    }
+    pub fn get_inode(&self) -> INode {
+        self.inode
     }
     /** Read symbol link */
     pub fn read_link<D>(
@@ -334,8 +346,8 @@ impl File {
         if !self.inode.is_symlink() {
             return Err(Error::new(ErrorKind::PermissionDenied, "Not a symbol link"));
         }
-        let mut path = vec![0; self.get_size() as usize];
-        self.read(fs, subvol, device, 0, &mut path, self.get_size())?;
+        let mut path = vec![0; self.inode.size as usize];
+        self.read(fs, subvol, device, 0, &mut path, self.inode.size)?;
         Ok(String::from_utf8_lossy(&path).to_string())
     }
     /** Remove a regular file or a symbol link */

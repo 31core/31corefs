@@ -13,6 +13,8 @@ pub const ACL_FILE: u16 = 1 << 13;
 /**
  * # Data structure
  *
+ * Each Inode takes 64 bytes, the on-disk layout is:
+ *
  * |Start|End|Description|
  * |-----|---|-----------|
  * |0    |2  |Permission |
@@ -24,6 +26,7 @@ pub const ACL_FILE: u16 = 1 << 13;
  * |30   |32 |Hard links |
  * |32   |40 |Size       |
  * |40   |48 |B-Tree root|
+ * |48   |64 |Reserved   |
  */
 pub struct INode {
     pub permission: u16,

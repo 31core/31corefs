@@ -775,6 +775,8 @@ impl BtreeNode {
             self.sync(device, self.block_count)?;
             self.block_count = fs.new_block()?;
             self.rc = 0;
+
+            fs.sb.real_used_blocks += 1;
         }
         Ok(())
     }
@@ -786,6 +788,8 @@ impl BtreeNode {
         if self.rc > 0 {
             self.rc -= 1;
             self.sync(device, self.block_count)?;
+
+            fs.sb.real_used_blocks -= 1;
         } else {
             fs.release_block(self.block_count);
         }

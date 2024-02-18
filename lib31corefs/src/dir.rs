@@ -1,5 +1,5 @@
 use crate::file::File;
-use crate::inode::ACL_DIRECTORY;
+use crate::inode::{INode, ACL_DIRECTORY};
 use crate::subvol::Subvolume;
 use crate::Filesystem;
 use crate::{base_name, dir_name};
@@ -50,14 +50,29 @@ impl Directory {
 
         for file in path {
             let dirs = dir.list_dir(fs, subvol, device).unwrap();
-            let inode_count = *dirs.get(&file.to_string_lossy().to_string()).unwrap();
+
+            let inode_count;
+            match dirs.get(&file.to_string_lossy().to_string()) {
+                Some(count) => inode_count = *count,
+                None => {
+                    return Err(Error::new(
+                        ErrorKind::NotFound,
+                        format!("'{}' no such file", file.to_string_lossy()),
+                    ))
+                }
+            }
             let inode = subvol.get_inode(fs, device, inode_count)?;
+
+            /* read link and open orignal directory */
             if inode.is_symlink() {
                 let mut symlink = File::open_by_inode(fs, subvol, device, inode_count)?;
                 let original_path = symlink.read_link(fs, subvol, device)?;
                 return Self::open(fs, subvol, device, &original_path);
             } else if !inode.is_dir() {
-                return Err(Error::from(ErrorKind::PermissionDenied));
+                return Err(Error::new(
+                    ErrorKind::Unsupported,
+                    format!("'{}' is not a directory", file.to_string_lossy()),
+                ));
             }
             dir = Self {
                 fd: File::from_inode(fs, device, inode_count, inode)?,
@@ -77,12 +92,18 @@ impl Directory {
     {
         let mut files: HashMap<String, u64> = HashMap::new();
 
-        let mut dir_data = vec![0; self.fd.get_size() as usize];
-        self.fd
-            .read(fs, subvol, device, 0, &mut dir_data, self.fd.get_size())?;
+        let mut dir_data = vec![0; self.fd.get_inode().size as usize];
+        self.fd.read(
+            fs,
+            subvol,
+            device,
+            0,
+            &mut dir_data,
+            self.fd.get_inode().size,
+        )?;
 
         let mut offset = 0;
-        while offset < self.fd.get_size() as usize {
+        while offset < self.fd.get_inode().size as usize {
             let inode = u64::from_be_bytes(dir_data[offset..offset + 8].try_into().unwrap());
             offset += 8;
             let str_len = dir_data[offset] as usize;
@@ -94,6 +115,9 @@ impl Directory {
         }
 
         Ok(files)
+    }
+    pub fn get_inode(&self) -> INode {
+        self.fd.get_inode()
     }
     /** Add file into directory */
     pub fn add_file<D>(
@@ -120,7 +144,7 @@ impl Directory {
         dir_data.extend(file_name.as_bytes());
 
         self.fd
-            .write(fs, subvol, device, self.fd.get_size(), &dir_data)?;
+            .write(fs, subvol, device, self.fd.get_inode().size, &dir_data)?;
 
         Ok(())
     }
@@ -135,12 +159,18 @@ impl Directory {
     where
         D: Read + Write + Seek,
     {
-        let mut dir_data = vec![0; self.fd.get_size() as usize];
-        self.fd
-            .read(fs, subvol, device, 0, &mut dir_data, self.fd.get_size())?;
+        let mut dir_data = vec![0; self.fd.get_inode().size as usize];
+        self.fd.read(
+            fs,
+            subvol,
+            device,
+            0,
+            &mut dir_data,
+            self.fd.get_inode().size,
+        )?;
 
         let mut offset = 0;
-        while offset < self.fd.get_size() as usize {
+        while offset < self.fd.get_inode().size as usize {
             offset += 8;
             let str_len = dir_data[offset] as usize;
             offset += 1;
@@ -191,13 +221,13 @@ impl Directory {
     {
         let dir = Self::open(fs, subvol, device, path)?;
 
-        if dir.fd.get_size() > 0 {
+        if dir.fd.get_inode().size > 0 {
             Err(Error::new(
                 ErrorKind::PermissionDenied,
                 format!("'{}' is not empty.", path),
             ))
         } else {
-            remove_by_inode(fs, subvol, device, dir.fd.get_inode())?;
+            remove_by_inode(fs, subvol, device, dir.fd.get_inode_count())?;
             Directory::open(fs, subvol, device, &dir_name!(path))?.remove_file(
                 fs,
                 subvol,
