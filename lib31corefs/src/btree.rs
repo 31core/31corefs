@@ -675,7 +675,7 @@ impl BtreeNode {
             self.r#type = BtreeType::Internal;
         }
 
-        self.clone_tree_internal(fs, device, self.depth as usize - 1)
+        self.clone_tree_internal(fs, device, self.depth as usize)
     }
     /** Clone the full B-Tree */
     fn clone_tree_internal<D>(

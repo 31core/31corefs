@@ -272,19 +272,6 @@ impl BitmapBlock {
 }
 
 #[derive(Debug)]
-pub struct INodeBlock {
-    pub inodes: [INode; BLOCK_SIZE / INODE_SIZE],
-}
-
-impl Default for INodeBlock {
-    fn default() -> Self {
-        Self {
-            inodes: [INode::default(); BLOCK_SIZE / INODE_SIZE],
-        }
-    }
-}
-
-#[derive(Debug)]
 pub struct INodeGroup {
     pub inodes: [INode; INODE_PER_GROUP],
 }
@@ -319,5 +306,24 @@ impl Block for INodeGroup {
         }
 
         block
+    }
+}
+
+impl INodeGroup {
+    pub fn is_empty(&self) -> bool {
+        for i in self.inodes {
+            if !i.is_empty_inode() {
+                return false;
+            }
+        }
+        true
+    }
+    pub fn is_full(&self) -> bool {
+        for i in self.inodes {
+            if i.is_empty_inode() {
+                return false;
+            }
+        }
+        true
     }
 }

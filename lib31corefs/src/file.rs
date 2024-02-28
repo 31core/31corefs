@@ -166,7 +166,9 @@ impl File {
     {
         let inode_group_count = self.inode_count / INODE_PER_GROUP as u64;
         /* check if the inode is multiple referenced */
-        let btree_query_result = subvol.btree.lookup(fs, device, inode_group_count)?;
+        let btree_query_result = subvol
+            .igroup_mgt_btree
+            .lookup(fs, device, inode_group_count)?;
         let inode_group_block = btree_query_result.value;
         if btree_query_result.rc > 0 {
             let mut inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
@@ -183,9 +185,9 @@ impl File {
             let new_inode_group_block = fs.new_block()?;
             inode_group.sync(device, new_inode_group_block)?;
             subvol
-                .btree
+                .igroup_mgt_btree
                 .modify(fs, device, inode_group_count, new_inode_group_block)?;
-            subvol.entry.inode_tree_root = subvol.btree.block_count;
+            subvol.entry.inode_tree_root = subvol.igroup_mgt_btree.block_count;
             crate::subvol::SubvolumeManager::set_subvolume(
                 fs,
                 device,
