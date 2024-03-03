@@ -2,7 +2,7 @@ use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
 
 use crate::block::*;
-use crate::btree::*;
+use crate::btree::{BtreeNode, BtreeType};
 use crate::inode::{INode, INODE_PER_GROUP};
 use crate::Filesystem;
 
@@ -56,7 +56,7 @@ impl SubvolumeEntry {
  * |-----|---|-----------|
  * |0    |8  |Next pointer|
  * |8    |16 |Count of entries|
- * |16   |4096|Entries   |
+ * |64   |4096|Entries   |
 */
 pub struct SubvolumeManager {
     pub next: u64,
@@ -96,7 +96,7 @@ impl Block for SubvolumeManager {
 }
 
 impl SubvolumeManager {
-    /** Generate ID if a new subvolume */
+    /** Generate ID for a new subvolume */
     fn generate_new_id<D>(fs: &Filesystem, device: &mut D, mut mgr_block_count: u64) -> u64
     where
         D: Write + Read + Seek,
@@ -370,36 +370,34 @@ impl AvailableInodeManager {
         let mut byte = count as usize / 8;
         let bit = count as usize % 8;
 
-        let mut allocator_chain = Vec::new();
+        let mut last_allocator_count = None;
         loop {
             let mut allocator =
                 AvailableInodeManager::load(fs.get_data_block(device, allocator_count)?);
 
+            if allocator.rc > 0 {
+                allocator.rc -= 1;
+                allocator.sync(device, allocator_count)?;
+                allocator_count = fs.new_block()?;
+                allocator.rc = 0;
+
+                if let Some(last_allocator_count) = last_allocator_count {
+                    let mut last_allocator = AvailableInodeManager::load(
+                        fs.get_data_block(device, last_allocator_count)?,
+                    );
+                    last_allocator.next = allocator_count;
+                    last_allocator.sync(device, last_allocator_count)?;
+                }
+            }
+
             if byte < allocator.bitmap_data.len() {
                 allocator.bitmap_data[byte] |= 1 << (7 - bit);
-
-                if allocator.rc > 0 {
-                    allocator.rc -= 1;
-                    allocator.sync(device, allocator_count)?;
-                    allocator_count = fs.new_block()?;
-                    allocator.rc = 0;
-
-                    if !allocator_chain.is_empty() {
-                        Self::modify_next_pointer(
-                            fs,
-                            device,
-                            *allocator_chain.last().unwrap(),
-                            allocator_count,
-                            &allocator_chain,
-                        )?;
-                    }
-                }
                 allocator.sync(device, allocator_count)?;
                 return Ok(());
             } else {
                 byte -= allocator.bitmap_data.len();
 
-                allocator_chain.push(allocator_count);
+                last_allocator_count = Some(allocator_count);
                 allocator_count = allocator.next;
             }
         }
@@ -417,36 +415,34 @@ impl AvailableInodeManager {
         let mut byte = count as usize / 8;
         let bit = count as usize % 8;
 
-        let mut allocator_chain = Vec::new();
+        let mut last_allocator_count = None;
         loop {
             let mut allocator =
                 AvailableInodeManager::load(fs.get_data_block(device, allocator_count)?);
 
+            if allocator.rc > 0 {
+                allocator.rc -= 1;
+                allocator.sync(device, allocator_count)?;
+                allocator_count = fs.new_block()?;
+                allocator.rc = 0;
+
+                if let Some(last_allocator_count) = last_allocator_count {
+                    let mut last_allocator = AvailableInodeManager::load(
+                        fs.get_data_block(device, last_allocator_count)?,
+                    );
+                    last_allocator.next = allocator_count;
+                    last_allocator.sync(device, last_allocator_count)?;
+                }
+            }
+
             if byte < allocator.bitmap_data.len() {
                 allocator.bitmap_data[byte] &= !(1 << (7 - bit));
-
-                if allocator.rc > 0 {
-                    allocator.rc -= 1;
-                    allocator.sync(device, allocator_count)?;
-                    allocator_count = fs.new_block()?;
-                    allocator.rc = 0;
-
-                    if !allocator_chain.is_empty() {
-                        Self::modify_next_pointer(
-                            fs,
-                            device,
-                            *allocator_chain.last().unwrap(),
-                            allocator_count,
-                            &allocator_chain,
-                        )?;
-                    }
-                }
                 allocator.sync(device, allocator_count)?;
                 return Ok(());
             } else {
                 byte -= allocator.bitmap_data.len();
 
-                allocator_chain.push(allocator_count);
+                last_allocator_count = Some(allocator_count);
                 allocator_count = allocator.next;
             }
         }
@@ -485,40 +481,6 @@ impl AvailableInodeManager {
                 return Err(Error::new(ErrorKind::Other, ""));
             }
         }
-    }
-    fn modify_next_pointer<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        mut allocator_count: u64,
-        pointer: u64,
-        allocator_chain: &[u64],
-    ) -> IOResult<()>
-    where
-        D: Write + Read + Seek,
-    {
-        let mut allocator =
-            AvailableInodeManager::load(fs.get_data_block(device, allocator_count)?);
-        allocator.next = pointer;
-
-        if allocator.rc > 0 {
-            allocator.rc -= 1;
-            allocator.sync(device, allocator_count)?;
-            allocator_count = block_copy_out(fs, device, allocator_count)?;
-            allocator.rc = 0;
-
-            if !allocator_chain.is_empty() {
-                Self::modify_next_pointer(
-                    fs,
-                    device,
-                    *allocator_chain.last().unwrap(),
-                    allocator_count,
-                    &allocator_chain[..allocator_chain.len() - 1],
-                )?;
-            }
-        }
-        allocator.sync(device, allocator_count)?;
-
-        Ok(())
     }
     /** Recursively clone blocks */
     pub fn clone_blocks<D>(

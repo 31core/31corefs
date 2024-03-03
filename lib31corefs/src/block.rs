@@ -1,8 +1,8 @@
 use crate::inode::*;
-use std::{
-    fmt::Debug,
-    io::{Error, ErrorKind, Read, Result as IOResult, Seek, SeekFrom, Write},
-};
+
+use std::fmt::Debug;
+use std::io::{Error, ErrorKind, Result as IOResult};
+use std::io::{Read, Seek, SeekFrom, Write};
 
 pub const GPOUP_SIZE: usize = BLOCK_MAP_SIZE + DATA_BLOCK_PER_GROUP;
 

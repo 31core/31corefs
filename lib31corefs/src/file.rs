@@ -164,38 +164,8 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        let inode_group_count = self.inode_count / INODE_PER_GROUP as u64;
-        /* check if the inode is multiple referenced */
-        let btree_query_result = subvol
-            .igroup_mgt_btree
-            .lookup(fs, device, inode_group_count)?;
-        let inode_group_block = btree_query_result.value;
-        if btree_query_result.rc > 0 {
-            let mut inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
-            for (i, inode) in inode_group.inodes.iter().enumerate() {
-                if !inode.is_empty_inode() {
-                    clone_by_inode(
-                        fs,
-                        subvol,
-                        device,
-                        self.inode_count - (self.inode_count % INODE_PER_GROUP as u64) + i as u64,
-                    )?;
-                }
-            }
-            let new_inode_group_block = fs.new_block()?;
-            inode_group.sync(device, new_inode_group_block)?;
-            subvol
-                .igroup_mgt_btree
-                .modify(fs, device, inode_group_count, new_inode_group_block)?;
-            subvol.entry.inode_tree_root = subvol.igroup_mgt_btree.block_count;
-            crate::subvol::SubvolumeManager::set_subvolume(
-                fs,
-                device,
-                fs.sb.subvol_mgr,
-                subvol.entry.id,
-                subvol.entry,
-            )?;
-        }
+        self.handle_rc_inode(fs, subvol, device)?;
+
         while !data.is_empty() {
             let block_count = offset / BLOCK_SIZE as u64; // the block count to be write
             let block_offset = offset % BLOCK_SIZE as u64; // the relative offset to the block
@@ -306,6 +276,8 @@ impl File {
     where
         D: Read + Write + Seek,
     {
+        self.handle_rc_inode(fs, subvol, device)?;
+
         /* reduce file size */
         if size < self.inode.size {
             let start_block = if size % BLOCK_SIZE as u64 == 0 {
@@ -352,6 +324,30 @@ impl File {
         self.read(fs, subvol, device, 0, &mut path, self.inode.size)?;
         Ok(String::from_utf8_lossy(&path).to_string())
     }
+    /** Copy a regular file or a symbol link */
+    pub fn copy<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        src: &str,
+        dst: &str,
+    ) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let fd = Self::open(fs, subvol, device, src)?;
+        let inode = copy_by_inode(fs, subvol, device, fd.inode_count)?;
+
+        Directory::open(fs, subvol, device, &dir_name!(src))?.add_file(
+            fs,
+            subvol,
+            device,
+            &base_name!(dst),
+            inode,
+        )?;
+
+        Ok(())
+    }
     /** Remove a regular file or a symbol link */
     pub fn remove<D>(
         fs: &mut Filesystem,
@@ -362,7 +358,10 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        let fd = Self::open(fs, subvol, device, path)?;
+        let mut fd = Self::open(fs, subvol, device, path)?;
+
+        fd.handle_rc_inode(fs, subvol, device)?;
+
         if fd.inode.is_dir() {
             Directory::remove(fs, subvol, device, path)?;
         } else {
@@ -373,6 +372,56 @@ impl File {
                 subvol,
                 device,
                 &base_name!(path),
+            )?;
+        }
+
+        Ok(())
+    }
+    /** Before writing a multi-referenced file, first do these steps:
+     * * Clone data blocks of each inode in the group
+     * * Clone the inode group
+     */
+    fn handle_rc_inode<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let inode_group_count = self.inode_count / INODE_PER_GROUP as u64;
+        /* check if the inode is multiple referenced */
+        let btree_query_result = subvol
+            .igroup_mgt_btree
+            .lookup(fs, device, inode_group_count)?;
+        let inode_group_block = btree_query_result.value;
+        if btree_query_result.rc > 0 {
+            let mut inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
+            /* clone data blocks of each inode in the group */
+            for (i, inode) in inode_group.inodes.iter().enumerate() {
+                if !inode.is_empty_inode() {
+                    clone_by_inode(
+                        fs,
+                        subvol,
+                        device,
+                        self.inode_count - (self.inode_count % INODE_PER_GROUP as u64) + i as u64,
+                    )?;
+                }
+            }
+            /* clone inode group */
+            let new_inode_group_block = fs.new_block()?;
+            inode_group.sync(device, new_inode_group_block)?;
+            subvol
+                .igroup_mgt_btree
+                .modify(fs, device, inode_group_count, new_inode_group_block)?;
+            subvol.entry.inode_tree_root = subvol.igroup_mgt_btree.block_count;
+            crate::subvol::SubvolumeManager::set_subvolume(
+                fs,
+                device,
+                fs.sb.subvol_mgr,
+                subvol.entry.id,
+                subvol.entry,
             )?;
         }
 

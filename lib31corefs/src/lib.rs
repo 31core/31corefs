@@ -146,6 +146,35 @@ impl Filesystem {
     }
 }
 
+/** Rename a regular file, directory or a symbol link */
+pub fn rename<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+    src: &str,
+    dst: &str,
+) -> IOResult<()>
+where
+    D: Read + Write + Seek,
+{
+    let mut src_dir = dir::Directory::open(fs, subvol, device, &dir_name!(src))?;
+    let inode = *src_dir
+        .list_dir(fs, subvol, device)?
+        .get(&base_name!(src))
+        .unwrap();
+    src_dir.remove_file(fs, subvol, device, &base_name!(src))?;
+
+    dir::Directory::open(fs, subvol, device, &dir_name!(dst))?.add_file(
+        fs,
+        subvol,
+        device,
+        &base_name!(dst),
+        inode,
+    )?;
+
+    Ok(())
+}
+
 pub fn is_file<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
 where
     D: Read + Write + Seek,
