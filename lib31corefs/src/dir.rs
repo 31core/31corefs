@@ -133,7 +133,7 @@ impl Directory {
     {
         if self.list_dir(fs, subvol, device)?.get(file_name).is_some() {
             return Err(Error::new(
-                std::io::ErrorKind::AlreadyExists,
+                ErrorKind::AlreadyExists,
                 format!("'{}' does already esist", file_name),
             ));
         }

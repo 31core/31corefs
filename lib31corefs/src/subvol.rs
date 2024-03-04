@@ -571,15 +571,6 @@ impl Subvolume {
                 }
             }
 
-            if group.is_full() {
-                AvailableInodeManager::set_unavailable(
-                    fs,
-                    device,
-                    self.entry.inode_alloc_block,
-                    inode_block_count,
-                )?;
-            }
-
             Ok(inode_count)
         } else {
             let inode_group_block = INodeGroup::allocate_on_block(fs, device)?;
@@ -641,6 +632,16 @@ impl Subvolume {
 
         let mut inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
         inode_group.inodes[inode_num] = inode;
+
+        if inode_group.is_full() {
+            AvailableInodeManager::set_unavailable(
+                fs,
+                device,
+                self.entry.inode_alloc_block,
+                inode_group_count,
+            )?;
+        }
+
         if btree_query_result.rc > 0 {
             let new_inode_group_block = fs.new_block()?;
             self.igroup_mgt_btree

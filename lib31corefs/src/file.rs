@@ -142,14 +142,21 @@ impl File {
     {
         let inode = subvol.get_inode(fs, device, inode_count)?;
 
-        Ok(Self {
-            inode,
-            inode_count,
-            btree_root: BtreeNode::new(
+        let btree_root;
+        if inode.btree_root != 0 {
+            btree_root = BtreeNode::new(
                 inode.btree_root,
                 BtreeType::Leaf,
                 &fs.get_data_block(device, inode.btree_root)?,
-            ),
+            );
+        } else {
+            btree_root = BtreeNode::default();
+        }
+
+        Ok(Self {
+            inode,
+            inode_count,
+            btree_root,
         })
     }
     /** Write data */
@@ -165,6 +172,15 @@ impl File {
         D: Read + Write + Seek,
     {
         self.handle_rc_inode(fs, subvol, device)?;
+
+        if self.inode.btree_root == 0 {
+            self.inode.btree_root = BtreeNode::allocate_on_block(fs, device)?;
+            self.btree_root = BtreeNode {
+                block_count: self.inode.btree_root,
+                r#type: BtreeType::Leaf,
+                ..Default::default()
+            };
+        }
 
         while !data.is_empty() {
             let block_count = offset / BLOCK_SIZE as u64; // the block count to be write
@@ -202,7 +218,7 @@ impl File {
             }
 
             if offset + written_size as u64 > self.inode.size {
-                self.inode.size += offset + written_size as u64 - self.inode.size;
+                self.inode.size = offset + written_size as u64;
             }
 
             data = &data[written_size..];
@@ -226,6 +242,12 @@ impl File {
     where
         D: Read + Write + Seek,
     {
+        if self.inode.size == 0 {
+            self.inode.update_atime();
+            subvol.set_inode(fs, device, self.inode_count, self.inode)?;
+            return Ok(());
+        }
+
         let btree_root = BtreeNode::new(
             self.inode.btree_root,
             BtreeType::Leaf,
@@ -279,7 +301,7 @@ impl File {
         self.handle_rc_inode(fs, subvol, device)?;
 
         /* reduce file size */
-        if size < self.inode.size {
+        if size > 0 && size < self.inode.size {
             let start_block = if size % BLOCK_SIZE as u64 == 0 {
                 size / BLOCK_SIZE as u64 + 1
             } else {
@@ -295,7 +317,12 @@ impl File {
             for i in start_block..end_block {
                 self.btree_root.remove(fs, device, i)?;
             }
+        } else if size == 0 {
+            self.btree_root.destroy(fs, device)?;
+            self.inode.btree_root = 0;
+            self.btree_root = BtreeNode::default();
         }
+
         self.inode.size = size;
         self.inode.update_mtime();
         subvol.set_inode(fs, device, self.inode_count, self.inode)?;
@@ -435,10 +462,8 @@ where
     D: Read + Write + Seek,
 {
     let inode_count = subvol.new_inode(fs, device)?;
-    let btree_root = BtreeNode::allocate_on_block(fs, device)?;
 
     let inode = INode {
-        btree_root,
         permission: ACL_FILE,
         ..Default::default()
     };
