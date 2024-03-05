@@ -1,6 +1,7 @@
 use crate::file::File;
 use crate::inode::{INode, ACL_DIRECTORY};
 use crate::subvol::Subvolume;
+use crate::symlink::read_link_from_inode;
 use crate::Filesystem;
 use crate::{base_name, dir_name};
 
@@ -65,8 +66,7 @@ impl Directory {
 
             /* read link and open orignal directory */
             if inode.is_symlink() {
-                let mut symlink = File::open_by_inode(fs, subvol, device, inode_count)?;
-                let original_path = symlink.read_link(fs, subvol, device)?;
+                let original_path = read_link_from_inode(fs, subvol, device, inode_count)?;
                 return Self::open(fs, subvol, device, &original_path);
             } else if !inode.is_dir() {
                 return Err(Error::new(
@@ -115,6 +115,25 @@ impl Directory {
         }
 
         Ok(files)
+    }
+    /* Find inode under the directory */
+    pub fn find_inode_by_name<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        name: &str,
+    ) -> IOResult<u64>
+    where
+        D: Read + Write + Seek,
+    {
+        match self.list_dir(fs, subvol, device)?.get(name) {
+            Some(inode) => Ok(*inode),
+            None => Err(Error::new(
+                ErrorKind::NotFound,
+                format!("No such file '{}'", name),
+            )),
+        }
     }
     pub fn get_inode(&self) -> INode {
         self.fd.get_inode()
@@ -240,7 +259,11 @@ impl Directory {
 }
 
 /** Create a directory and return the inode count */
-pub fn create<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D) -> IOResult<u64>
+pub(crate) fn create<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
@@ -252,7 +275,7 @@ where
 }
 
 /** Remove a directory */
-pub fn remove_by_inode<D>(
+pub(crate) fn remove_by_inode<D>(
     fs: &mut Filesystem,
     subvol: &mut Subvolume,
     device: &mut D,

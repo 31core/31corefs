@@ -327,3 +327,35 @@ impl INodeGroup {
         true
     }
 }
+
+#[derive(Debug)]
+pub struct LinkedContentTable {
+    pub next: u64,
+    pub data: [u8; BLOCK_SIZE - 8],
+}
+
+impl Default for LinkedContentTable {
+    fn default() -> Self {
+        Self {
+            next: 0,
+            data: [0; BLOCK_SIZE - 8],
+        }
+    }
+}
+
+impl Block for LinkedContentTable {
+    fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
+        Self {
+            next: u64::from_be_bytes(bytes[..8].try_into().unwrap()),
+            data: bytes[8..].try_into().unwrap(),
+        }
+    }
+    fn dump(&self) -> [u8; BLOCK_SIZE] {
+        let mut block = [0; BLOCK_SIZE];
+
+        block[..8].copy_from_slice(&self.next.to_be_bytes());
+        block[8..].copy_from_slice(&self.data);
+
+        block
+    }
+}

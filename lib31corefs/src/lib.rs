@@ -1,9 +1,11 @@
-pub mod block;
-pub mod btree;
 pub mod dir;
 pub mod file;
 pub mod inode;
 pub mod subvol;
+pub mod symlink;
+
+mod block;
+mod btree;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, SeekFrom, Write};
