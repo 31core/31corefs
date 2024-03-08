@@ -1,10 +1,10 @@
+pub mod block;
 pub mod dir;
 pub mod file;
 pub mod inode;
 pub mod subvol;
 pub mod symlink;
 
-mod block;
 mod btree;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
@@ -126,6 +126,13 @@ impl Filesystem {
     {
         let subvol_mgr = self.sb.subvol_mgr;
         SubvolumeManager::new_subvolume(self, device, subvol_mgr)
+    }
+    pub fn remove_subvolume<D>(&mut self, device: &mut D, id: u64) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let subvol_mgr = self.sb.subvol_mgr;
+        SubvolumeManager::remove_subvolume(self, device, subvol_mgr, id)
     }
     pub fn get_subvolume<D>(&self, device: &mut D, id: u64) -> IOResult<Subvolume>
     where

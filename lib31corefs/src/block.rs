@@ -1,4 +1,6 @@
 use crate::inode::*;
+use crate::subvol::Subvolume;
+use crate::Filesystem;
 
 use std::fmt::Debug;
 use std::io::{Error, ErrorKind, Result as IOResult};
@@ -18,12 +20,17 @@ macro_rules! data_block_relative_to_absolute {
 }
 
 /** Copy out a mutiple referenced data block */
-pub fn block_copy_out<D>(fs: &mut crate::Filesystem, device: &mut D, count: u64) -> IOResult<u64>
+pub fn block_copy_out<D>(
+    fs: &mut Filesystem,
+    subvol: &mut Subvolume,
+    device: &mut D,
+    count: u64,
+) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
     let block = fs.get_data_block(device, count)?;
-    let new_block = fs.new_block()?;
+    let new_block = subvol.new_block(fs, device)?;
     fs.set_data_block(device, new_block, block)?;
     Ok(new_block)
 }
@@ -54,11 +61,24 @@ pub trait Block: Default + Debug {
         Ok(())
     }
     /** Allocate and initialize an empty block on device */
-    fn allocate_on_block<D>(fs: &mut crate::Filesystem, device: &mut D) -> IOResult<u64>
+    fn allocate_on_block<D>(fs: &mut Filesystem, device: &mut D) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
         let block_count = fs.new_block()?;
+        Self::default().sync(device, block_count)?;
+        Ok(block_count)
+    }
+    /** Allocate and initialize an empty block on device, also managed by subvolume bitmap */
+    fn allocate_on_block_subvol<D>(
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<u64>
+    where
+        D: Write + Read + Seek,
+    {
+        let block_count = subvol.new_block(fs, device)?;
         Self::default().sync(device, block_count)?;
         Ok(block_count)
     }
@@ -268,6 +288,48 @@ impl BitmapBlock {
             }
         }
         None
+    }
+}
+
+#[derive(Debug)]
+pub struct BitmapIndexBlock {
+    pub next: u64,
+    pub bitmaps: [u64; BLOCK_SIZE / 8 - 1],
+}
+
+impl Block for BitmapIndexBlock {
+    fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
+        let mut block = Self {
+            next: u64::from_be_bytes(bytes[..8].try_into().unwrap()),
+            ..Default::default()
+        };
+
+        let bitmaps = &bytes[8..];
+        for (i, block) in block.bitmaps.iter_mut().enumerate() {
+            *block = u64::from_be_bytes(bitmaps[8 * i..8 * (i + 1)].try_into().unwrap());
+        }
+
+        block
+    }
+    fn dump(&self) -> [u8; BLOCK_SIZE] {
+        let mut bytes = [0; BLOCK_SIZE];
+
+        bytes[..8].copy_from_slice(&self.next.to_be_bytes());
+        let bitmaps = &mut bytes[8..];
+        for (i, block) in self.bitmaps.iter().enumerate() {
+            bitmaps[8 * i..8 * (i + 1)].copy_from_slice(&block.to_be_bytes());
+        }
+
+        bytes
+    }
+}
+
+impl Default for BitmapIndexBlock {
+    fn default() -> Self {
+        Self {
+            bitmaps: [0; BLOCK_SIZE / 8 - 1],
+            next: 0,
+        }
     }
 }
 

@@ -20,7 +20,7 @@ where
 {
     let inode_count = subvol.new_inode(fs, device)?;
 
-    let mut content_ptr = LinkedContentTable::allocate_on_block(fs, device)?;
+    let mut content_ptr = LinkedContentTable::allocate_on_block_subvol(fs, subvol, device)?;
     let inode = INode {
         permission: ACL_SYMBOLLINK,
         btree_root: content_ptr,
@@ -37,7 +37,7 @@ where
             lct.sync(device, content_ptr)?;
             break;
         } else {
-            content_ptr = fs.new_block()?;
+            content_ptr = subvol.new_block(fs, device)?;
             lct.next = content_ptr;
             lct.sync(device, content_ptr)?;
         }

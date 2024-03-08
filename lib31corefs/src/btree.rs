@@ -1,4 +1,5 @@
 use crate::block::*;
+use crate::subvol::Subvolume;
 use crate::Filesystem;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
@@ -80,7 +81,7 @@ impl BtreeEntry {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 /**
  * # Data structure
  *
@@ -200,13 +201,18 @@ impl BtreeNode {
      * Return:
      * * node ID of the right node
      * * block count of the right node */
-    fn part<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<(u64, u64)>
+    fn part<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<(u64, u64)>
     where
         D: Write + Read + Seek,
     {
         let mut next = Self {
             r#type: self.r#type,
-            block_count: fs.new_block()?,
+            block_count: subvol.new_block(fs, device)?,
             ..Default::default()
         };
         for _ in 0..self.entries.len() / 2 {
@@ -222,6 +228,7 @@ impl BtreeNode {
     pub fn insert<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         offset: u64,
         block: u64,
@@ -235,10 +242,10 @@ impl BtreeNode {
             self.r#type = BtreeType::Internal;
         }
 
-        self.cow_clone_node(fs, device)?;
+        self.cow_clone_node(fs, subvol, device)?;
 
         if let Some((id, block)) =
-            self.insert_internal(fs, device, offset, block, self.depth as usize)?
+            self.insert_internal(fs, subvol, device, offset, block, self.depth as usize)?
         {
             let mut left = if self.depth == 0 {
                 Self {
@@ -255,7 +262,7 @@ impl BtreeNode {
                 left.entries.push(self.entries[i]);
             }
 
-            let left_block = fs.new_block()?;
+            let left_block = subvol.new_block(fs, device)?;
             left.block_count = left_block;
             left.sync(device, left_block)?;
 
@@ -282,6 +289,7 @@ impl BtreeNode {
     fn insert_internal<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         offset: u64,
         block: u64,
@@ -295,7 +303,7 @@ impl BtreeNode {
 
             /* part into two child nodes */
             if self.entries.len() > MAX_LEAF_COUNT {
-                return Ok(Some(self.part(fs, device)?));
+                return Ok(Some(self.part(fs, subvol, device)?));
             } else {
                 self.sync(device, self.block_count)?;
             }
@@ -314,17 +322,17 @@ impl BtreeNode {
                         Self::new(self.entries[i].value, BtreeType::Internal, &child)
                     };
 
-                    child_node.cow_clone_node(fs, device)?;
+                    child_node.cow_clone_node(fs, subvol, device)?;
 
                     /* if parted into tow sub trees */
                     if let Some((id, block)) =
-                        child_node.insert_internal(fs, device, offset, block, depth - 1)?
+                        child_node.insert_internal(fs, subvol, device, offset, block, depth - 1)?
                     {
                         self.add(id, block);
                     }
 
                     if self.entries.len() > MAX_INTERNAL_COUNT {
-                        return Ok(Some(self.part(fs, device)?));
+                        return Ok(Some(self.part(fs, subvol, device)?));
                     } else {
                         self.sync(device, self.block_count)?;
                     }
@@ -337,6 +345,7 @@ impl BtreeNode {
     pub fn modify<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         key: u64,
         value: u64,
@@ -350,13 +359,14 @@ impl BtreeNode {
             self.r#type = BtreeType::Internal;
         }
 
-        self.cow_clone_node(fs, device)?;
-        self.modify_internal(fs, device, key, value, self.depth as usize)?;
+        self.cow_clone_node(fs, subvol, device)?;
+        self.modify_internal(fs, subvol, device, key, value, self.depth as usize)?;
         Ok(())
     }
     fn modify_internal<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         key: u64,
         value: u64,
@@ -389,16 +399,22 @@ impl BtreeNode {
                         Self::new(self.entries[i].value, BtreeType::Internal, &child_block)
                     };
 
-                    child_node.cow_clone_node(fs, device)?;
+                    child_node.cow_clone_node(fs, subvol, device)?;
 
-                    child_node.modify_internal(fs, device, key, value, depth - 1)?;
+                    child_node.modify_internal(fs, subvol, device, key, value, depth - 1)?;
                 }
             }
         }
         Ok(())
     }
     /** Remove an offset from B-Tree */
-    pub fn remove<D>(&mut self, fs: &mut Filesystem, device: &mut D, key: u64) -> IOResult<()>
+    pub fn remove<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        key: u64,
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
@@ -408,8 +424,8 @@ impl BtreeNode {
             self.r#type = BtreeType::Internal;
         }
 
-        self.cow_clone_node(fs, device)?;
-        self.remove_internal(fs, device, key, self.depth as usize)?;
+        self.cow_clone_node(fs, subvol, device)?;
+        self.remove_internal(fs, subvol, device, key, self.depth as usize)?;
         if self.entries.len() == 1 {
             let mut child = if self.depth == 1 {
                 Self::new(
@@ -429,7 +445,7 @@ impl BtreeNode {
                 self.entries.push(child.entries[i]);
             }
 
-            child.cow_release_node(fs, device)?;
+            child.cow_release_node(fs, subvol, device)?;
 
             self.sync(device, self.block_count)?;
             self.depth -= 1;
@@ -440,6 +456,7 @@ impl BtreeNode {
     fn remove_internal<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         key: u64,
         depth: usize,
@@ -461,9 +478,9 @@ impl BtreeNode {
                         Self::new(self.entries[i].value, BtreeType::Internal, &child_block)
                     };
 
-                    child_node.cow_clone_node(fs, device)?;
+                    child_node.cow_clone_node(fs, subvol, device)?;
 
-                    child_node.remove_internal(fs, device, key, depth - 1)?;
+                    child_node.remove_internal(fs, subvol, device, key, depth - 1)?;
                     /* when child_node is empty, self.len() must be 0 */
                     if child_node.entries.is_empty() {
                         self.entries.remove(i);
@@ -485,7 +502,7 @@ impl BtreeNode {
                                 )
                             };
 
-                            previous_node.cow_clone_node(fs, device)?;
+                            previous_node.cow_clone_node(fs, subvol, device)?;
 
                             /* merge this child node into previous node */
                             if previous_node.entries.len() + child_node.entries.len()
@@ -495,7 +512,7 @@ impl BtreeNode {
                                     previous_node.entries.push(child_node.entries[child_i]);
                                 }
 
-                                child_node.cow_release_node(fs, device)?;
+                                child_node.cow_release_node(fs, subvol, device)?;
                                 self.entries.remove(i);
                             } else {
                                 let id = previous_node.entries.last().unwrap().key;
@@ -522,7 +539,7 @@ impl BtreeNode {
                                     &next_node_block,
                                 )
                             };
-                            next_node.cow_clone_node(fs, device)?;
+                            next_node.cow_clone_node(fs, subvol, device)?;
                             /* merge this child node into next node */
                             if next_node.entries.len() + child_node.entries.len()
                                 <= MAX_INTERNAL_COUNT
@@ -532,7 +549,7 @@ impl BtreeNode {
                                 }
                                 self.entries[i + 1].key = next_node.entries.first().unwrap().key;
 
-                                child_node.cow_release_node(fs, device)?;
+                                child_node.cow_release_node(fs, subvol, device)?;
 
                                 self.entries.remove(i);
                             } else {
@@ -715,7 +732,12 @@ impl BtreeNode {
         Ok(())
     }
     /** Destroy the full B-Tree */
-    pub fn destroy<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<()>
+    pub fn destroy<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
@@ -725,11 +747,12 @@ impl BtreeNode {
             self.r#type = BtreeType::Internal;
         }
 
-        self.destroy_internal(fs, device, self.depth as usize)
+        self.destroy_internal(fs, subvol, device, self.depth as usize)
     }
     fn destroy_internal<D>(
         &mut self,
         fs: &mut Filesystem,
+        subvol: &mut Subvolume,
         device: &mut D,
         depth: usize,
     ) -> IOResult<()>
@@ -759,22 +782,27 @@ impl BtreeNode {
                         &fs.get_data_block(device, self.entries[i].value)?,
                     )
                 };
-                child_node.destroy_internal(fs, device, depth - 1)?;
+                child_node.destroy_internal(fs, subvol, device, depth - 1)?;
             }
         }
 
-        self.cow_release_node(fs, device)?;
+        self.cow_release_node(fs, subvol, device)?;
         Ok(())
     }
     /** Check and clone multiple referenced node */
-    fn cow_clone_node<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<()>
+    fn cow_clone_node<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
         if self.rc > 0 {
             self.rc -= 1;
             self.sync(device, self.block_count)?;
-            self.block_count = fs.new_block()?;
+            self.block_count = subvol.new_block(fs, device)?;
             self.rc = 0;
 
             fs.sb.real_used_blocks += 1;
@@ -782,7 +810,12 @@ impl BtreeNode {
         Ok(())
     }
     /** Check and release multiple referenced node */
-    fn cow_release_node<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<()>
+    fn cow_release_node<D>(
+        &mut self,
+        fs: &mut Filesystem,
+        subvol: &mut Subvolume,
+        device: &mut D,
+    ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
@@ -792,7 +825,7 @@ impl BtreeNode {
 
             fs.sb.real_used_blocks -= 1;
         } else {
-            fs.release_block(self.block_count);
+            subvol.release_block(fs, device, self.block_count)?;
         }
         Ok(())
     }
