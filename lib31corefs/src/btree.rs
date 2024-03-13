@@ -5,8 +5,8 @@ use crate::Filesystem;
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
 
-const MAX_INTERNAL_COUNT: usize = BLOCK_SIZE / ENTRY_INTERNAL_SIZE - 1;
-const MAX_LEAF_COUNT: usize = BLOCK_SIZE / ENTRY_LEAF_SIZE;
+const MAX_INTERNAL_COUNT: usize = (BLOCK_SIZE - ENTRY_START) / ENTRY_INTERNAL_SIZE;
+const MAX_LEAF_COUNT: usize = (BLOCK_SIZE - ENTRY_START) / ENTRY_LEAF_SIZE;
 const ENTRY_LEAF_SIZE: usize = 3 * 8;
 const ENTRY_INTERNAL_SIZE: usize = 2 * 8;
 const ENTRY_START: usize = 16;
@@ -88,7 +88,7 @@ impl BtreeEntry {
  * |Start|End|Description|
  * |-----|---|-----------|
  * |0    |2  |Count of entries|
- * |2    |3  |Depth      |
+ * |2    |3  |Depth (only root node has this field)|
  * |3    |8  |Reserved   |
  * |8    |16 |Reference count|
  * |16   |4096|Entries   |
@@ -150,12 +150,12 @@ impl BtreeNode {
     pub fn load_leaf(bytes: [u8; BLOCK_SIZE]) -> Self {
         let mut node = Self {
             r#type: BtreeType::Leaf,
+            rc: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
             ..Default::default()
         };
 
         let content = &bytes[ENTRY_START..];
         let entries = u16::from_be_bytes(bytes[0..2].try_into().unwrap()) as usize;
-        node.rc = u64::from_be_bytes(bytes[8..16].try_into().unwrap());
 
         for i in 0..entries {
             let entry =
@@ -241,8 +241,6 @@ impl BtreeNode {
         } else {
             self.r#type = BtreeType::Internal;
         }
-
-        self.cow_clone_node(fs, subvol, device)?;
 
         if let Some((id, block)) =
             self.insert_internal(fs, subvol, device, offset, block, self.depth as usize)?
@@ -426,7 +424,7 @@ impl BtreeNode {
 
         self.cow_clone_node(fs, subvol, device)?;
         self.remove_internal(fs, subvol, device, key, self.depth as usize)?;
-        if self.entries.len() == 1 {
+        if self.entries.len() == 1 && self.depth > 0 {
             let mut child = if self.depth == 1 {
                 Self::new(
                     self.entries[0].value,
@@ -481,10 +479,11 @@ impl BtreeNode {
                     child_node.cow_clone_node(fs, subvol, device)?;
 
                     child_node.remove_internal(fs, subvol, device, key, depth - 1)?;
-                    /* when child_node is empty, self.len() must be 0 */
-                    if child_node.entries.is_empty() {
-                        self.entries.remove(i);
-                    } else if child_node.entries.len() < MAX_INTERNAL_COUNT / 2 {
+
+                    /* child nodes can be merged into previous or next node */
+                    if depth > 1 && child_node.entries.len() < MAX_INTERNAL_COUNT / 2
+                        || depth == 1 && child_node.entries.len() < MAX_LEAF_COUNT / 2
+                    {
                         if i > 0 {
                             let previous_node_block =
                                 fs.get_data_block(device, self.entries[i - 1].value)?;
@@ -505,8 +504,12 @@ impl BtreeNode {
                             previous_node.cow_clone_node(fs, subvol, device)?;
 
                             /* merge this child node into previous node */
-                            if previous_node.entries.len() + child_node.entries.len()
-                                <= MAX_INTERNAL_COUNT
+                            if depth > 1
+                                && previous_node.entries.len() + child_node.entries.len()
+                                    <= MAX_INTERNAL_COUNT
+                                || depth == 1
+                                    && previous_node.entries.len() + child_node.entries.len()
+                                        <= MAX_LEAF_COUNT
                             {
                                 for child_i in 0..child_node.entries.len() {
                                     previous_node.entries.push(child_node.entries[child_i]);
@@ -541,8 +544,12 @@ impl BtreeNode {
                             };
                             next_node.cow_clone_node(fs, subvol, device)?;
                             /* merge this child node into next node */
-                            if next_node.entries.len() + child_node.entries.len()
-                                <= MAX_INTERNAL_COUNT
+                            if depth > 1
+                                && next_node.entries.len() + child_node.entries.len()
+                                    <= MAX_INTERNAL_COUNT
+                                || depth == 1
+                                    && next_node.entries.len() + child_node.entries.len()
+                                        <= MAX_LEAF_COUNT
                             {
                                 for child_i in (0..child_node.entries.len()).rev() {
                                     next_node.entries.insert(0, child_node.entries[child_i]);

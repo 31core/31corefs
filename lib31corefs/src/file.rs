@@ -285,7 +285,9 @@ impl File {
                 };
 
                 for i in start_block..end_block {
-                    btree.remove(fs, subvol, device, i)?;
+                    if btree.lookup(fs, device, i).is_ok() {
+                        btree.remove(fs, subvol, device, i)?;
+                    }
                 }
             } else if size == 0 {
                 btree.destroy(fs, subvol, device)?;
