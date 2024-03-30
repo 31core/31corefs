@@ -1,12 +1,12 @@
 #set page(numbering: "1")
 
-#align(center, text(17pt)[*31corefs Specification*])
+#align(center)[#text(17pt)[*31corefs Specification*]]
 
-#align(center, [
+#align(center)[
   31core \
   #link("mailto:31core@tutanota.com") \
   Version: 1.0-dev
-])
+]
 
 #set heading(numbering: "1.")
 
@@ -19,6 +19,11 @@ Supported features:
 - Subvolume
 - Snapshot
 - Copy on Write
+
+= Definitions
+#table(columns: (auto, auto),
+    [BLOCK_SIZE], [Unit size of blocks, currently supports 4096 block size.]
+)
 
 = Data structure
 
@@ -39,13 +44,19 @@ struct super_block {
 };
 ```
 
-The `magic_header` is pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`.
+*Note*
 
-The `version` is defined as `0x01`.
+#table(
+    columns: (auto, auto),
+    [*Field*], [*Note*],
+    [magic_header], [pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`],
+    [version], [`0x01` for version 1],
+    [uuid], [Recommend to use UUIDv4],
+    [label], [A regular C string that ends with NULL character]
+)
 
-The `uuid` is recommend to use UUIDv4.
-
-NOTE: The `label` is a regular C string that ends with NULL character.
+== Bitmap
+31corefs uses bitmap as block allocator, it has two kinds of bitmap, global bitmap and subvolume bitmap.
 
 == Inode
 Inode records the meta of a file.
@@ -84,7 +95,7 @@ struct inode {
 
 *Empty inode*
 
-If `permission` in Inode is `0xffff`, then it is an empty Inode.
+An an empty Inode always has `permission` valued `0xffff`.
 
 *ACLs*
 
@@ -95,7 +106,7 @@ If `permission` in Inode is `0xffff`, then it is an empty Inode.
 == Subvolume
 === Subvolume entry
 
-A subvolume entry takes 64 bytes to describe a subvolume.
+A subvolume entry takes 128 bytes to describe a subvolume.
 
 ```c
 struct subvolume_entry {
@@ -103,13 +114,19 @@ struct subvolume_entry {
     uint64_t inode_tree_root;
     uint64_t inode_alloc_block;
     uint64_t root_inode;
+    uint64_t bitmap;
+    uint64_t total_bitmap;
+    uint64_t used_blocks;
+    uint64_t real_used_blocks;
+    uint64_t creation_date;
+    uint64_t snaps;
+    uint64_t parent_subvol;
+    uint8_t state;
 };
-
 ```
 
 === Subvolume manager
-
-Subvolume manager is a linked list.
+*Definition*
 ```c
 struct subvolume_manager {
     uint64_t next;
@@ -117,6 +134,20 @@ struct subvolume_manager {
     subvolume_entry entries[63];
 };
 ```
+Subvolume manager is a linked list.
+
+=== Linked bitmap
+*Definition*
+```c
+struct igroup_bitmap {
+    uint64_t next;
+    uint64_t rc;
+    uint8_t bitmap_data[BLOCK_SIZE - 16],
+};
+```
+Subvolume bitmap is a linked table with bitmap data, and its size is the same as global bitmap blocks.
+
+Subvolume mark an allocated block on the subvolume bitmap after allocated with the global allocator, and unmark an block when release it. This subvolume bitmap will be used when destroying a subvolume.
 
 == B-Tree
 === B-Tree entry 
@@ -162,3 +193,23 @@ struct btree_internal_node {
     btree_internal_entry entries[255];
 };
 ```
+
+== Linked content table
+*Definition*
+```c
+struct linked_content_table {
+    uint64_t next;
+    uint8_t data[BLOCK_SIZE - 8];
+};
+```
+Linked content table is a typical linked table used to store simple content.
+
+= Subvolume
+
+A subvolume contains an independent Inode allocation B-Tree, recording block counts of Inode groups.
+
+== Removal of subvolume
+
+Subvolume removal operation follows the following steps:
+- Release blocks marked in the subvolume bitmap
+- Remove subvolume entry from subvolume manager

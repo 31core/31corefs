@@ -11,7 +11,7 @@ use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use block::*;
-use subvol::{Subvolume, SubvolumeManager};
+use subvol::*;
 
 pub const FS_MAGIC_HEADER: [u8; 4] = [0x31, 0xc0, 0x8e, 0xf5];
 pub const FS_VERSION: u8 = 1;
@@ -152,6 +152,13 @@ impl Filesystem {
         D: Read + Write + Seek,
     {
         SubvolumeManager::create_snapshot(self, device, self.sb.subvol_mgr, id)
+    }
+    /** List submolumes */
+    pub fn list_subvolumes<D>(&mut self, device: &mut D) -> IOResult<Vec<SubvolumeEntry>>
+    where
+        D: Read + Write + Seek,
+    {
+        SubvolumeManager::list_subvols(self, device, self.sb.subvol_mgr)
     }
 }
 
