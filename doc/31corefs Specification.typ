@@ -25,6 +25,13 @@ Supported features:
     [BLOCK_SIZE], [Unit size of blocks, currently supports 4096 block size.]
 )
 
+Subvolume statement:
+#table(columns: (auto, auto),
+    [*Constant*], [*Value*],
+    [SUBVOLUME_STATE_ALLOCATED], [1],
+    [SUBVOLUME_STATE_REMOVED], [2]
+)
+
 = Data structure
 
 == Super block
@@ -49,7 +56,7 @@ struct super_block {
 #table(
     columns: (auto, auto),
     [*Field*], [*Note*],
-    [magic_header], [pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`],
+    [magic_header], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`],
     [version], [`0x01` for version 1],
     [uuid], [Recommend to use UUIDv4],
     [label], [A regular C string that ends with NULL character]
@@ -112,10 +119,10 @@ A subvolume entry takes 128 bytes to describe a subvolume.
 struct subvolume_entry {
     uint64_t id;
     uint64_t inode_tree_root;
-    uint64_t inode_alloc_block;
     uint64_t root_inode;
     uint64_t bitmap;
-    uint64_t total_bitmap;
+    uint64_t shared_bitmap;
+    uint64_t igroup_bitmap;
     uint64_t used_blocks;
     uint64_t real_used_blocks;
     uint64_t creation_date;
@@ -205,11 +212,18 @@ struct linked_content_table {
 Linked content table is a typical linked table used to store simple content.
 
 = Subvolume
-
 A subvolume contains an independent Inode allocation B-Tree, recording block counts of Inode groups.
 
-== Removal of subvolume
+== Creation of subvolume
+Subvolume creation operation follows the following steps:
+- Allocate a subvolume entry from subvolume manager
+- Initialize *igroup bitmap*, *block bitmap* and *shared block bitmap*
+- Mark `subvolume_entry.state` as `SUBVOLUME_STATE_ALLOCATED`
 
+== Removal of subvolume
 Subvolume removal operation follows the following steps:
 - Release blocks marked in the subvolume bitmap
-- Remove subvolume entry from subvolume manager
+- If `subvolume_entry.snaps` is 0
+  - Remove subvolume entry from subvolume manager
+- If `subvolume_entry.snaps` is not 0
+  - Mark `subvolume_entry.state` as `SUBVOLUME_STATE_REMOVED`

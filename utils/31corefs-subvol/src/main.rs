@@ -14,6 +14,8 @@ struct Args {
 enum Commands {
     /// List subvolumes
     List,
+    /// Create a subvolume
+    Create,
     /// Create a snapshot
     Snap { id: u64 },
     /// Remove a subvolume
@@ -31,7 +33,11 @@ fn main() -> std::io::Result<()> {
     match args.commands {
         Commands::Snap { id } => {
             let snap_id = fs.create_snapshot(&mut device, id)?;
-            println!("Created snapshot '{}' of submovume '{}'.", snap_id, id);
+            println!("Created snapshot '{}' of subvolume '{}'.", snap_id, id);
+        }
+        Commands::Create => {
+            let id = fs.new_subvolume(&mut device)?;
+            println!("Created subvolume '{}'.", id);
         }
         Commands::Remove { id } => {
             fs.remove_subvolume(&mut device, id)?;

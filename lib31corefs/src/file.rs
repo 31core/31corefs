@@ -31,6 +31,7 @@ macro_rules! base_name {
     };
 }
 
+#[derive(Debug)]
 pub struct File {
     inode: INode,
     inode_count: u64,
