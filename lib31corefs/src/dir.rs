@@ -1,5 +1,5 @@
 use crate::file::File;
-use crate::inode::{INode, ACL_DIRECTORY};
+use crate::inode::{INode, ACL_DIRECTORY, PERMISSION_BITS};
 use crate::subvol::Subvolume;
 use crate::symlink::read_link_from_inode;
 use crate::Filesystem;
@@ -150,7 +150,7 @@ impl Directory {
     where
         D: Read + Write + Seek,
     {
-        if self.list_dir(fs, subvol, device)?.get(file_name).is_some() {
+        if self.list_dir(fs, subvol, device)?.contains_key(file_name) {
             return Err(Error::new(
                 ErrorKind::AlreadyExists,
                 format!("'{}' does already esist", file_name),
@@ -269,7 +269,7 @@ where
 {
     let inode_count = crate::file::create(fs, subvol, device)?;
     let mut inode = subvol.get_inode(fs, device, inode_count)?;
-    inode.permission = ACL_DIRECTORY;
+    inode.acl = ACL_DIRECTORY << PERMISSION_BITS;
     subvol.set_inode(fs, device, inode_count, inode)?;
     Ok(inode_count)
 }

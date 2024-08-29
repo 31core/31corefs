@@ -1,6 +1,6 @@
 use crate::block::LinkedContentTable;
 use crate::dir::Directory;
-use crate::inode::{INode, ACL_SYMBOLLINK};
+use crate::inode::{INode, ACL_SYMBOLLINK, PERMISSION_BITS};
 use crate::subvol::Subvolume;
 use crate::{base_name, dir_name, Block, Filesystem};
 
@@ -22,7 +22,7 @@ where
 
     let mut content_ptr = LinkedContentTable::allocate_on_block_subvol(fs, subvol, device)?;
     let inode = INode {
-        permission: ACL_SYMBOLLINK,
+        acl: ACL_SYMBOLLINK << PERMISSION_BITS,
         btree_root: content_ptr,
         ..Default::default()
     };

@@ -868,7 +868,7 @@ impl Subvolume {
             .igroup_mgt_btree
             .lookup(fs, device, inode_group_count)?;
         let inode_group_block = btree_query_result.value;
-        self.set_inode(fs, device, inode, INode::default())?;
+        self.set_inode(fs, device, inode, INode::empty())?;
 
         let inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
 

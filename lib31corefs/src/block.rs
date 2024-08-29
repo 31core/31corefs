@@ -3,7 +3,7 @@ use crate::subvol::Subvolume;
 use crate::Filesystem;
 
 use std::fmt::Debug;
-use std::io::{Error, ErrorKind, Result as IOResult};
+use std::io::Result as IOResult;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 pub const GPOUP_SIZE: usize = BLOCK_MAP_SIZE + DATA_BLOCK_PER_GROUP;
@@ -200,16 +200,14 @@ impl BlockGroup {
         Ok(())
     }
     /** Allocate a data block */
-    pub fn new_block(&mut self) -> IOResult<u64> {
+    pub fn new_block(&mut self) -> Option<u64> {
         for block in 0..BLOCK_MAP_SIZE {
-            for count in 0..BLOCK_SIZE * 8 {
-                if !self.block_map[block].get_used(count as u64) {
-                    self.block_map[block].set_used(count as u64);
-                    return Ok((block * BLOCK_SIZE * 8 + count) as u64);
-                }
+            if let Some(off) = self.block_map[block].find_unused() {
+                self.block_map[block].set_used(off);
+                return Some((block * BLOCK_SIZE * 8) as u64 + off);
             }
         }
-        Err(Error::new(ErrorKind::Other, "No enough block"))
+        None
     }
     /** Clone a data block */
     pub fn clone_block(&mut self, count: u64) {
@@ -276,9 +274,12 @@ impl BitmapBlock {
         let bit = count as usize % 8;
         self.bytes[byte] &= !(1 << (7 - bit));
     }
+    /**
+     * Find an unmarked bit and return its position.
+     */
     pub fn find_unused(&self) -> Option<u64> {
         for (i, byte) in self.bytes.iter().enumerate() {
-            if *byte != 255 {
+            if *byte != 0xff {
                 for j in 0..8 {
                     let position = (i * 8 + j) as u64;
                     if !self.get_used(position) {
@@ -341,7 +342,7 @@ pub struct INodeGroup {
 impl Default for INodeGroup {
     fn default() -> Self {
         Self {
-            inodes: [INode::default(); INODE_PER_GROUP],
+            inodes: [INode::empty(); INODE_PER_GROUP],
         }
     }
 }

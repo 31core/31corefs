@@ -69,7 +69,7 @@ impl Filesystem {
     /** Allocate a data block */
     pub fn new_block(&mut self) -> IOResult<u64> {
         for (i, group) in self.groups.iter_mut().enumerate() {
-            if let Ok(count) = group.new_block() {
+            if let Some(count) = group.new_block() {
                 self.sb.used_blocks += 1;
                 self.sb.real_used_blocks += 1;
                 return Ok(data_block_relative_to_absolute!(i as u64, count));
@@ -84,7 +84,7 @@ impl Filesystem {
         self.sb.used_blocks -= 1;
         self.sb.real_used_blocks -= 1;
     }
-    /** Load data block */
+    /** Store data block */
     pub fn set_data_block<D>(
         &mut self,
         device: &mut D,
@@ -98,7 +98,7 @@ impl Filesystem {
         device.write_all(&block)?;
         Ok(())
     }
-    /** Dump data block */
+    /** Load data block */
     pub fn get_data_block<D>(&self, device: &mut D, count: u64) -> IOResult<[u8; BLOCK_SIZE]>
     where
         D: Read + Write + Seek,
@@ -160,47 +160,44 @@ impl Filesystem {
     {
         SubvolumeManager::list_subvols(self, device, self.sb.subvol_mgr)
     }
-}
+    pub fn is_file<D>(&mut self, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
+    where
+        D: Read + Write + Seek,
+    {
+        file::File::open(self, subvol, device, path).is_ok()
+    }
+    pub fn is_dir<D>(&mut self, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
+    where
+        D: Read + Write + Seek,
+    {
+        dir::Directory::open(self, subvol, device, path).is_ok()
+    }
+    /** Rename a regular file, directory or a symbol link */
+    pub fn rename<D>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        src: &str,
+        dst: &str,
+    ) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        let mut src_dir = dir::Directory::open(self, subvol, device, &dir_name!(src))?;
+        let inode = *src_dir
+            .list_dir(self, subvol, device)?
+            .get(&base_name!(src))
+            .unwrap();
+        src_dir.remove_file(self, subvol, device, &base_name!(src))?;
 
-/** Rename a regular file, directory or a symbol link */
-pub fn rename<D>(
-    fs: &mut Filesystem,
-    subvol: &mut Subvolume,
-    device: &mut D,
-    src: &str,
-    dst: &str,
-) -> IOResult<()>
-where
-    D: Read + Write + Seek,
-{
-    let mut src_dir = dir::Directory::open(fs, subvol, device, &dir_name!(src))?;
-    let inode = *src_dir
-        .list_dir(fs, subvol, device)?
-        .get(&base_name!(src))
-        .unwrap();
-    src_dir.remove_file(fs, subvol, device, &base_name!(src))?;
+        dir::Directory::open(self, subvol, device, &dir_name!(dst))?.add_file(
+            self,
+            subvol,
+            device,
+            &base_name!(dst),
+            inode,
+        )?;
 
-    dir::Directory::open(fs, subvol, device, &dir_name!(dst))?.add_file(
-        fs,
-        subvol,
-        device,
-        &base_name!(dst),
-        inode,
-    )?;
-
-    Ok(())
-}
-
-pub fn is_file<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
-where
-    D: Read + Write + Seek,
-{
-    file::File::open(fs, subvol, device, path).is_ok()
-}
-
-pub fn is_dir<D>(fs: &mut Filesystem, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
-where
-    D: Read + Write + Seek,
-{
-    dir::Directory::open(fs, subvol, device, path).is_ok()
+        Ok(())
+    }
 }

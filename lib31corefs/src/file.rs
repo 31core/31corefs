@@ -1,7 +1,7 @@
 use crate::block::*;
 use crate::btree::*;
 use crate::dir::Directory;
-use crate::inode::{INode, ACL_FILE, INODE_PER_GROUP};
+use crate::inode::{INode, ACL_REGULAR_FILE, INODE_PER_GROUP, PERMISSION_BITS};
 use crate::subvol::Subvolume;
 use crate::symlink::read_link_from_inode;
 use crate::Filesystem;
@@ -429,7 +429,7 @@ where
     let inode_count = subvol.new_inode(fs, device)?;
 
     let inode = INode {
-        permission: ACL_FILE,
+        acl: ACL_REGULAR_FILE << PERMISSION_BITS,
         ..Default::default()
     };
     subvol.set_inode(fs, device, inode_count, inode)?;

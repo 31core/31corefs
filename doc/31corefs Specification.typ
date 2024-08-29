@@ -3,14 +3,14 @@
 #align(center)[#text(17pt)[*31corefs Specification*]]
 
 #align(center)[
-  31core \
-  #link("mailto:31core@tutanota.com") \
+  Author: 31core\
+  Email: #link("mailto:31core@tutanota.com") \
   Version: 1.0-dev
 ]
 
 #set heading(numbering: "1.")
 
-#outline()
+#outline(depth: 1)
 
 = Introduction
 31corefs is a modern, cross-platform filesystem. It support advanced features like subvolume management, snapshot and CoW.
@@ -32,10 +32,8 @@ Subvolume statement:
     [SUBVOLUME_STATE_REMOVED], [2]
 )
 
-= Data structure
-
-== Super block
-The super block records meta data describing the filesystem.
+= Super block
+The super block is the first block of the physical device, it records metadata describing the filesystem.
 
 ```c
 struct super_block {
@@ -51,24 +49,74 @@ struct super_block {
 };
 ```
 
-*Note*
+*Field explanation*
 
 #table(
     columns: (auto, auto),
-    [*Field*], [*Note*],
+    [*Field*], [*Explanation*],
     [magic_header], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`],
     [version], [`0x01` for version 1],
     [uuid], [Recommend to use UUIDv4],
     [label], [A regular C string that ends with NULL character]
 )
 
-== Bitmap
-31corefs uses bitmap as block allocator, it has two kinds of bitmap, global bitmap and subvolume bitmap.
+= Block group
+The whole filesystem is divided into several block groups, each block group is an independent block allocator. A block group includes a bitmap block and $8 times 4096$ data blocks. The bitmap is ahead of the the data blocks and is uesd to tracking allocation of the data blocks.
 
-== Inode
-Inode records the meta of a file.
 
-Each Inode takes 64 bytes, and its data structure is as follow.
+= B-Tree
+== B-Tree entry 
+
+31corefs defines a generic B-Tree that is used to mapping a unique 64 bit unsigned integer to another, with CoW support, which is uesd in data block management and inode group management.
+
+Leaf node entry takes 24 bytes, with a reference counter (rc),
+```c
+struct btree_leaf_entry {
+    uint64_t key;
+    uint64_t value;
+    uint64_t rc;
+};
+```
+
+Internal node entry takes 16 bytes.
+```c
+struct btree_internal_entry {
+    uint64_t key;
+    uint64_t value;
+};
+```
+
+== B-Tree node
+
+A leaf B-Tree node contains 170 leaf entries.
+
+```c
+struct btree_leaf_node {
+    uint64_t entry_count;
+    uint64_t rc;
+    btree_internal_entry entries[170];
+};
+```
+
+An internal B-Tree node contains 255 internal entries.
+
+```c
+struct btree_internal_node {
+    uint64_t entry_count;
+    uint8_t depth[8];
+    uint64_t rc;
+    btree_internal_entry entries[255];
+};
+```
+
+A B-Tree node (both internal and leaf) is stored in a block, its `rc` value means how many times did the block referenced, clone step must be performed before modification when `rc` is greater than `0`.
+
+The root node uses `depth[0]` to store tree height, otherwise set `0`.
+
+= Inode
+Inode records the metadata of a file.
+
+Each inode takes 64 bytes, and its data structure is as follow.
 
 ```c
 struct inode {
@@ -89,7 +137,7 @@ struct inode {
 #table(
     columns: (auto, auto),
     [*Field*], [*Description*],
-    [permission], [POSIX permission],
+    [acl], [POSIX ACL],
     [uid], [UID of owner],
     [gid], [GID of owner],
     [atime], [Last access time (unit: sec)],
@@ -102,17 +150,48 @@ struct inode {
 
 *Empty inode*
 
-An an empty Inode always has `permission` valued `0xffff`.
+An an empty Inode always has `acl` valued `0xffff`.
 
 *ACLs*
 
-- `ACL_DIRECTORY`: 0b100000000000000
-- `ACL_SYMBOLLINK`: 0b010000000000000
-- `ACL_FILE`: 0b001000000000000
+#table(
+    columns: (4 * 7%, 4 * 9%),
+    [File type (7 bits)], [Permission (9 bits)]
+)
 
-== Subvolume
-=== Subvolume entry
+*File type*
 
+- `ACL_RUGULAR_FILE`: `0x1`
+- `ACL_DIRECTORY`: `0x2`
+- `ACL_SYMBOLLINK`: `0x4`
+- `ACL_CHAR`: `0x8`
+- `ACL_BLOCK`: `0x10`
+
+*Permission*
+
+#table(
+    columns: (auto, auto, auto, auto, auto, auto, auto, auto, auto),
+    table.cell(colspan: 3)[Owner],
+    table.cell(colspan: 3)[Group],
+    table.cell(colspan: 3)[Other],
+    [R], [W], [X], [R], [W], [X], [R], [W], [X],
+)
+
+== Inode group
+31corefs store a group of inodes (called "inode group") in a block, a group contains 64 inodes
+
+=== Inode index
+Given inode group $g$ (indexing from `0`) and the $x$st (indexing from `0`) inodes in the group, the inode number $i$ should be:
+
+$ i = 64 times g + x $
+
+=== Inode group management
+The map from inode group to block number is maintained by a B-Tree, and the B-Tree key is regarded the inode group number.
+
+= Subvolume
+A subvolume contains an independent Inode allocation B-Tree, recording block counts of Inode groups.
+
+== Subvolume entry
 A subvolume entry takes 128 bytes to describe a subvolume.
 
 ```c
@@ -132,7 +211,7 @@ struct subvolume_entry {
 };
 ```
 
-=== Subvolume manager
+== Subvolume manager
 *Definition*
 ```c
 struct subvolume_manager {
@@ -142,77 +221,6 @@ struct subvolume_manager {
 };
 ```
 Subvolume manager is a linked list.
-
-=== Linked bitmap
-*Definition*
-```c
-struct igroup_bitmap {
-    uint64_t next;
-    uint64_t rc;
-    uint8_t bitmap_data[BLOCK_SIZE - 16],
-};
-```
-Subvolume bitmap is a linked table with bitmap data, and its size is the same as global bitmap blocks.
-
-Subvolume mark an allocated block on the subvolume bitmap after allocated with the global allocator, and unmark an block when release it. This subvolume bitmap will be used when destroying a subvolume.
-
-== B-Tree
-=== B-Tree entry 
-
-31corefs defines a generic B-Tree that is uesd in data block management and inode group management.
-
-Leaf node entry takes 24 bytes.
-```c
-struct btree_leaf_entry {
-    uint64_t key;
-    uint64_t value;
-    uint64_t rc;
-};
-```
-
-Internal node entry takes 16 bytes.
-```c
-struct btree_internal_entry {
-    uint64_t key;
-    uint64_t value;
-};
-```
-
-=== B-Tree node
-
-A leaf B-Tree node contains 170 leaf entries.
-
-```c
-struct btree_leaf_node {
-    uint64_t entry_count;
-    uint64_t rc;
-    btree_internal_entry entries[170];
-};
-```
-
-An internal B-Tree node contains 255 internal entries.
-
-```c
-struct btree_internal_node {
-    uint64_t entry_count;
-    uint64_t rc;
-    uint8_t depth; // only root node has this field
-    btree_internal_entry entries[255];
-};
-```
-
-== Linked content table
-*Definition*
-```c
-struct linked_content_table {
-    uint64_t next;
-    uint8_t data[BLOCK_SIZE - 8];
-};
-```
-Linked content table is a typical linked table used to store simple content.
-
-= Subvolume
-A subvolume contains an independent Inode allocation B-Tree, recording block counts of Inode groups.
 
 == Creation of subvolume
 Subvolume creation operation follows the following steps:
@@ -227,3 +235,25 @@ Subvolume removal operation follows the following steps:
   - Remove subvolume entry from subvolume manager
 - If `subvolume_entry.snaps` is not 0
   - Mark `subvolume_entry.state` as `SUBVOLUME_STATE_REMOVED`
+
+== Linked bitmap
+*Definition*
+```c
+struct igroup_bitmap {
+    uint64_t next;
+    uint64_t rc;
+    uint8_t bitmap_data[BLOCK_SIZE - 16];
+};
+```
+
+Subvolume mark an allocated block on the subvolume bitmap after allocated with the global allocator, and unmark an block when release it. This subvolume bitmap will be used when destroying a subvolume.
+
+== Linked content table
+*Definition*
+```c
+struct linked_content_table {
+    uint64_t next;
+    uint8_t data[BLOCK_SIZE - 8];
+};
+```
+Linked content table is a typical linked table used to store simple content.
