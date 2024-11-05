@@ -50,7 +50,7 @@ impl Directory {
         };
 
         for file in path {
-            let dirs = dir.list_dir(fs, subvol, device).unwrap();
+            let dirs = dir.list_dir(fs, subvol, device)?;
 
             let inode_count;
             match dirs.get(&file.to_string_lossy().to_string()) {

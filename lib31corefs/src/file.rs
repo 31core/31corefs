@@ -110,7 +110,7 @@ impl File {
         }
     }
     /** Open a file by inode count */
-    pub fn open_by_inode<D>(
+    pub(crate) fn open_by_inode<D>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
@@ -452,7 +452,7 @@ where
     if inode.hlinks > 0 {
         inode.hlinks -= 1;
         subvol.set_inode(fs, device, inode_count, inode)?;
-    } else {
+    } else if inode.btree_root != 0 {
         let mut btree_root = BtreeNode::new(
             inode.btree_root,
             BtreeType::Leaf,

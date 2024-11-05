@@ -46,7 +46,11 @@ pub struct BtreeEntry {
 
 impl BtreeEntry {
     pub fn new(key: u64, value: u64) -> Self {
-        Self { key, value, rc: 0 }
+        Self {
+            key,
+            value,
+            ..Default::default()
+        }
     }
     pub fn load_internal(bytes: &[u8]) -> Self {
         Self {
@@ -96,13 +100,16 @@ impl BtreeEntry {
 pub struct BtreeNode {
     pub block_count: u64,
     pub rc: u64,
-    /// only root node has this field
+    /** only root node has this field */
     pub depth: u8,
     pub entries: Vec<BtreeEntry>,
     pub r#type: BtreeType,
 }
 
 impl Block for BtreeNode {
+    /**
+     * DON'T USE, load BtreeNode by `load_internal` or `load_leaf` instead
+     */
     fn load(_bytes: [u8; BLOCK_SIZE]) -> Self {
         Self::default()
     }

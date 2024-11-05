@@ -3,7 +3,11 @@ name = "subvol"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "31corefs-subvol"
+path = "src/main.rs"
+
 [dependencies]
-chrono = "0.4.37"
-clap = { version = "4.5.4", features = ["derive"] }
+chrono = "0.4.38"
+clap = { version = "4.5.20", features = ["derive"] }
 lib31corefs = { path = "../../lib31corefs" }

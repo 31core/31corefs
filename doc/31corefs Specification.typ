@@ -1,4 +1,6 @@
 #set page(numbering: "1")
+#set par(justify: true)
+#set table(stroke: 0.5pt)
 
 #align(center)[#text(17pt)[*31corefs Specification*]]
 
@@ -57,7 +59,7 @@ struct super_block {
     [magic_header], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`],
     [version], [`0x01` for version 1],
     [uuid], [Recommend to use UUIDv4],
-    [label], [A regular C string that ends with NULL character]
+    [label], [A regular C string that ends with `NULL` character]
 )
 
 = Block group
