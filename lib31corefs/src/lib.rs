@@ -8,7 +8,7 @@ pub mod symlink;
 mod btree;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, Write};
 
 use block::*;
 use subvol::*;
@@ -28,18 +28,27 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
+        const BLOCK_GROUP_MINIMAL_SZIE: usize = 3;
+
         let mut fs = Self::default();
-        let groups_count = block_size / GPOUP_SIZE;
-        fs.sb.groups = groups_count as u64;
         fs.sb.uuid = *uuid::Uuid::new_v4().as_bytes();
         fs.sb.total_blocks = block_size as u64;
-        fs.groups = vec![BlockGroup::default(); groups_count];
 
-        for (i, group) in fs.groups.iter_mut().enumerate() {
-            group.group_count = i as u64;
+        let mut group_start = 1;
+        while group_start <= (block_size - BLOCK_GROUP_MINIMAL_SZIE) as u64 {
+            let mut group = BlockGroup::create(group_start, block_size as u64 - group_start);
+            group.meta_data.id = fs.groups.len() as u64;
+
+            group_start += group.blocks();
+            fs.groups.push(group);
         }
 
+        fs.sb.groups = fs.groups.len() as u64;
         fs.sb.subvol_mgr = SubvolumeManager::allocate_on_block(&mut fs, device)?;
+        fs.sb.creation_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
 
         fs.sb.default_subvol = fs.new_subvolume(device)?;
 
@@ -51,11 +60,22 @@ impl Filesystem {
     {
         let sb = SuperBlock::load(block::load_block(device, 0)?);
 
-        let mut groups = vec![BlockGroup::default(); sb.groups as usize];
+        let mut groups = Vec::new();
 
-        for (i, group) in groups.iter_mut().enumerate() {
-            group.group_count = i as u64;
+        let mut group_start = 1;
+        loop {
+            let mut group = BlockGroup {
+                start_block: group_start,
+                ..Default::default()
+            };
             group.load(device)?;
+            group_start = group.meta_data.next_group;
+
+            groups.push(group);
+
+            if group_start == 0 {
+                break;
+            }
         }
 
         let subvol_mgr = SubvolumeManager::load(load_block(device, sb.subvol_mgr)?);
@@ -68,45 +88,29 @@ impl Filesystem {
     }
     /** Allocate a data block */
     pub fn new_block(&mut self) -> IOResult<u64> {
-        for (i, group) in self.groups.iter_mut().enumerate() {
+        for group in &mut self.groups {
             if let Some(count) = group.new_block() {
                 self.sb.used_blocks += 1;
                 self.sb.real_used_blocks += 1;
-                return Ok(data_block_relative_to_absolute!(i as u64, count));
+                return Ok(group.to_absolute_block(count));
             }
         }
         Err(Error::new(ErrorKind::Other, "No enough block"))
     }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
-        let group = (count as usize - 1) / GPOUP_SIZE;
-        self.groups[group].release_block((count - 1) % GPOUP_SIZE as u64);
+        let mut group_count = 0;
+        while group_count < self.groups.len() - 1
+            && count > self.groups[group_count].start_block
+            && count < self.groups[group_count + 1].start_block
+        {
+            group_count += 1;
+        }
+
+        let relative_count = count - self.groups[group_count].to_relative_block(count);
+        self.groups[group_count].release_block(relative_count);
         self.sb.used_blocks -= 1;
         self.sb.real_used_blocks -= 1;
-    }
-    /** Store data block */
-    pub fn set_data_block<D>(
-        &mut self,
-        device: &mut D,
-        count: u64,
-        block: [u8; BLOCK_SIZE],
-    ) -> IOResult<()>
-    where
-        D: Read + Write + Seek,
-    {
-        device.seek(SeekFrom::Start(count * BLOCK_SIZE as u64))?;
-        device.write_all(&block)?;
-        Ok(())
-    }
-    /** Load data block */
-    pub fn get_data_block<D>(&self, device: &mut D, count: u64) -> IOResult<[u8; BLOCK_SIZE]>
-    where
-        D: Read + Write + Seek,
-    {
-        device.seek(SeekFrom::Start(count * BLOCK_SIZE as u64))?;
-        let mut block = [0; BLOCK_SIZE];
-        device.read_exact(&mut block)?;
-        Ok(block)
     }
     /** Synchronize meta data to disk */
     pub fn sync_meta_data<D>(&mut self, device: &mut D) -> IOResult<()>
@@ -138,13 +142,13 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        SubvolumeManager::get_subvolume(self, device, self.sb.subvol_mgr, id)
+        SubvolumeManager::get_subvolume(device, self.sb.subvol_mgr, id)
     }
     pub fn get_default_subvolume<D>(&self, device: &mut D) -> IOResult<Subvolume>
     where
         D: Read + Write + Seek,
     {
-        SubvolumeManager::get_subvolume(self, device, self.sb.subvol_mgr, self.sb.default_subvol)
+        SubvolumeManager::get_subvolume(device, self.sb.subvol_mgr, self.sb.default_subvol)
     }
     /** Create a snapshot */
     pub fn create_snapshot<D>(&mut self, device: &mut D, id: u64) -> IOResult<u64>
@@ -158,7 +162,7 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        SubvolumeManager::list_subvols(self, device, self.sb.subvol_mgr)
+        SubvolumeManager::list_subvols(device, self.sb.subvol_mgr)
     }
     pub fn is_file<D>(&mut self, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
     where

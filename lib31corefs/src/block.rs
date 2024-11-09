@@ -6,18 +6,10 @@ use std::fmt::Debug;
 use std::io::Result as IOResult;
 use std::io::{Read, Seek, SeekFrom, Write};
 
-pub const GPOUP_SIZE: usize = BLOCK_MAP_SIZE + DATA_BLOCK_PER_GROUP;
-
 pub const BLOCK_SIZE: usize = 4096;
-pub const DATA_BLOCK_PER_GROUP: usize = BLOCK_MAP_SIZE * BLOCK_SIZE * 8;
-pub const BLOCK_MAP_SIZE: usize = 1;
 
-#[macro_export]
-macro_rules! data_block_relative_to_absolute {
-    ($group_count: expr, $count: expr) => {
-        1 + $group_count * GPOUP_SIZE as u64 + BLOCK_MAP_SIZE as u64 + $count
-    };
-}
+const BLOCK_MAP_SIZE: usize = 1;
+const LABEL_MAX_LEN: usize = 256;
 
 /** Copy out a mutiple referenced data block */
 pub fn block_copy_out<D>(
@@ -29,13 +21,13 @@ pub fn block_copy_out<D>(
 where
     D: Read + Write + Seek,
 {
-    let block = fs.get_data_block(device, count)?;
+    let block = load_block(device, count)?;
     let new_block = subvol.new_block(fs, device)?;
-    fs.set_data_block(device, new_block, block)?;
+    save_block(device, new_block, block)?;
     Ok(new_block)
 }
 
-pub fn load_block<D>(device: &mut D, block_count: u64) -> IOResult<[u8; BLOCK_SIZE]>
+pub(crate) fn load_block<D>(device: &mut D, block_count: u64) -> IOResult<[u8; BLOCK_SIZE]>
 where
     D: Read + Write + Seek,
 {
@@ -46,11 +38,33 @@ where
     Ok(block)
 }
 
+/** Store data block */
+pub(crate) fn save_block<D>(
+    device: &mut D,
+    block_count: u64,
+    block: [u8; BLOCK_SIZE],
+) -> IOResult<[u8; BLOCK_SIZE]>
+where
+    D: Read + Write + Seek,
+{
+    device.seek(SeekFrom::Start(block_count * BLOCK_SIZE as u64))?;
+    device.write_all(&block)?;
+
+    Ok(block)
+}
+
 pub trait Block: Default + Debug {
     /** Load from bytes */
     fn load(bytes: [u8; BLOCK_SIZE]) -> Self;
     /** Dump to bytes */
     fn dump(&self) -> [u8; BLOCK_SIZE];
+    /** Load from device */
+    fn load_block<D>(device: &mut D, block_count: u64) -> IOResult<Self>
+    where
+        D: Read + Write + Seek,
+    {
+        Ok(Self::load(load_block(device, block_count)?))
+    }
     /** Synchronize to device */
     fn sync<D>(&mut self, device: &mut D, block_count: u64) -> IOResult<()>
     where
@@ -100,16 +114,18 @@ pub trait Block: Default + Debug {
  * |301  |309|Real used blocks|
  * |309  |317|Subvolume block|
  * |317  |325|Default subvolume|
+ * |325  |333|Filesystem created time|
 */
 pub struct SuperBlock {
     pub groups: u64,
     pub uuid: [u8; 16],
-    pub label: [u8; 256],
+    pub label: [u8; LABEL_MAX_LEN],
     pub total_blocks: u64,
     pub used_blocks: u64,
     pub real_used_blocks: u64,
     pub default_subvol: u64,
     pub subvol_mgr: u64,
+    pub creation_time: u64,
 }
 
 impl Default for SuperBlock {
@@ -123,6 +139,7 @@ impl Default for SuperBlock {
             real_used_blocks: 0,
             subvol_mgr: 0,
             default_subvol: 0,
+            creation_time: 0,
         }
     }
 }
@@ -138,6 +155,7 @@ impl Block for SuperBlock {
             real_used_blocks: u64::from_be_bytes(bytes[301..309].try_into().unwrap()),
             subvol_mgr: u64::from_be_bytes(bytes[309..317].try_into().unwrap()),
             default_subvol: u64::from_be_bytes(bytes[317..325].try_into().unwrap()),
+            creation_time: u64::from_be_bytes(bytes[325..333].try_into().unwrap()),
         }
     }
     fn dump(&self) -> [u8; BLOCK_SIZE] {
@@ -153,6 +171,7 @@ impl Block for SuperBlock {
         bytes[301..309].copy_from_slice(&self.real_used_blocks.to_be_bytes());
         bytes[309..317].copy_from_slice(&self.subvol_mgr.to_be_bytes());
         bytes[317..325].copy_from_slice(&self.default_subvol.to_be_bytes());
+        bytes[325..333].copy_from_slice(&self.creation_time.to_be_bytes());
 
         bytes
     }
@@ -161,7 +180,7 @@ impl Block for SuperBlock {
 impl SuperBlock {
     /** Set filesystem label */
     pub fn set_label(&mut self, label: &str) {
-        self.label = [0; 256];
+        self.label = [0; LABEL_MAX_LEN];
         self.label[..label.len()].copy_from_slice(label.as_bytes());
     }
     /** Get filesystem label */
@@ -180,56 +199,107 @@ impl SuperBlock {
 }
 
 #[derive(Default, Debug, Clone)]
+pub struct BlockGroupMeta {
+    pub id: u64,
+    pub free_blocks: u64,
+    pub next_group: u64,
+}
+
+impl Block for BlockGroupMeta {
+    fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
+        Self {
+            id: u64::from_be_bytes(bytes[..8].try_into().unwrap()),
+            free_blocks: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
+            next_group: u64::from_be_bytes(bytes[16..24].try_into().unwrap()),
+        }
+    }
+    fn dump(&self) -> [u8; BLOCK_SIZE] {
+        let mut block = [0; BLOCK_SIZE];
+        block[..8].copy_from_slice(&self.id.to_be_bytes());
+        block[8..16].copy_from_slice(&self.free_blocks.to_be_bytes());
+        block[16..24].copy_from_slice(&self.next_group.to_be_bytes());
+
+        block
+    }
+}
+
+#[derive(Default, Debug, Clone)]
 pub struct BlockGroup {
-    pub group_count: u64,
-    pub block_map: [BitmapBlock; BLOCK_MAP_SIZE],
+    pub meta_data: BlockGroupMeta,
+    pub start_block: u64,
+    pub block_map: BitmapBlock,
 }
 
 impl BlockGroup {
+    pub fn create(group_start: u64, totol_blocks: u64) -> Self {
+        let mut group = BlockGroup {
+            start_block: group_start,
+            ..Default::default()
+        };
+
+        if totol_blocks <= group.blocks() {
+            group.meta_data.next_group = 0;
+            const META_BLOCK: u64 = 1;
+            group.meta_data.free_blocks = totol_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
+        } else {
+            group.meta_data.next_group = group_start + group.blocks();
+            group.meta_data.free_blocks = 8 * BLOCK_SIZE as u64;
+        }
+
+        group
+    }
     pub fn load<D>(&mut self, device: &mut D) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        for i in 0..BLOCK_MAP_SIZE as u64 {
-            self.block_map[i as usize] = BitmapBlock::load(load_block(
-                device,
-                GPOUP_SIZE as u64 * self.group_count + 1 + i,
-            )?);
-        }
+        self.meta_data = BlockGroupMeta::load_block(device, self.start_block)?;
+        self.block_map = BitmapBlock::load_block(device, self.start_block + 1)?;
 
         Ok(())
     }
     /** Allocate a data block */
     pub fn new_block(&mut self) -> Option<u64> {
-        for block in 0..BLOCK_MAP_SIZE {
-            if let Some(off) = self.block_map[block].find_unused() {
-                self.block_map[block].set_used(off);
-                return Some((block * BLOCK_SIZE * 8) as u64 + off);
+        if self.meta_data.free_blocks > 0 {
+            if let Some(off) = self.block_map.find_unused() {
+                self.block_map.set_used(off);
+                self.meta_data.free_blocks -= 1;
+                return Some(off);
             }
         }
         None
     }
     /** Clone a data block */
     pub fn clone_block(&mut self, count: u64) {
-        let block = (count as usize - BLOCK_MAP_SIZE) / (BLOCK_SIZE * 8);
-        let count = (count as usize - BLOCK_MAP_SIZE) % (BLOCK_SIZE * 8);
-        self.block_map[block].get_used(count as u64);
+        self.block_map.get_used(count);
     }
     /** Release a data block */
     pub fn release_block(&mut self, count: u64) {
-        let block = (count as usize - BLOCK_MAP_SIZE) / (BLOCK_SIZE * 8);
-        let count = (count as usize - BLOCK_MAP_SIZE) % (BLOCK_SIZE * 8);
-        self.block_map[block].set_unused(count as u64);
+        self.block_map.set_unused(count);
+        self.meta_data.free_blocks += 1;
     }
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        for (i, block) in self.block_map.iter_mut().enumerate() {
-            block.sync(device, self.group_count * GPOUP_SIZE as u64 + 1 + i as u64)?;
-        }
+        self.meta_data.sync(device, self.start_block)?;
+        self.block_map.sync(device, self.start_block + 1)?;
 
         Ok(())
+    }
+    #[inline]
+    pub(crate) fn blocks(&self) -> u64 {
+        const META_BLOCK: u64 = 1;
+        META_BLOCK + BLOCK_MAP_SIZE as u64 + 8 * BLOCK_SIZE as u64
+    }
+    #[inline]
+    pub(crate) fn to_relative_block(&self, absolute_block: u64) -> u64 {
+        const META_BLOCK: u64 = 1;
+        absolute_block - self.start_block - META_BLOCK - BLOCK_MAP_SIZE as u64
+    }
+    #[inline]
+    pub(crate) fn to_absolute_block(&self, relative_block: u64) -> u64 {
+        const META_BLOCK: u64 = 1;
+        self.start_block + META_BLOCK + BLOCK_MAP_SIZE as u64 + relative_block
     }
 }
 
@@ -260,7 +330,7 @@ impl BitmapBlock {
     pub fn get_used(&self, count: u64) -> bool {
         let byte = count as usize / 8;
         let bit = count as usize % 8;
-        self.bytes[byte] >> (7 - bit) << 7 != 0
+        self.bytes[byte] & (1 << (7 - bit)) != 0
     }
     /** Mark as used */
     pub fn set_used(&mut self, count: u64) {

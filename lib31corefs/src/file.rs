@@ -54,14 +54,9 @@ impl File {
         let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
         dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
 
-        Self::open_by_inode(fs, subvol, device, inode_count)
+        Self::open_by_inode(subvol, device, inode_count)
     }
-    pub fn from_inode<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        inode_count: u64,
-        inode: INode,
-    ) -> IOResult<Self>
+    pub(crate) fn from_inode<D>(device: &mut D, inode_count: u64, inode: INode) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
@@ -69,7 +64,7 @@ impl File {
             Some(BtreeNode::new(
                 inode.btree_root,
                 BtreeType::Leaf,
-                &fs.get_data_block(device, inode.btree_root)?,
+                &load_block(device, inode.btree_root)?,
             ))
         } else {
             None
@@ -94,11 +89,11 @@ impl File {
         let inode_count = Directory::open(fs, subvol, device, &dir_name!(path))?
             .find_inode_by_name(fs, subvol, device, &base_name!(path))?;
 
-        let inode = subvol.get_inode(fs, device, inode_count)?;
+        let inode = subvol.get_inode(device, inode_count)?;
 
         /* read link and open orignal file */
         if inode.is_symlink() {
-            let real_path = read_link_from_inode(fs, subvol, device, inode_count)?;
+            let real_path = read_link_from_inode(subvol, device, inode_count)?;
             Self::open(fs, subvol, device, &real_path)
         } else if inode.is_dir() {
             Err(Error::new(
@@ -106,12 +101,11 @@ impl File {
                 format!("'{}' is a directory.", path),
             ))
         } else {
-            Self::open_by_inode(fs, subvol, device, inode_count)
+            Self::open_by_inode(subvol, device, inode_count)
         }
     }
     /** Open a file by inode count */
     pub(crate) fn open_by_inode<D>(
-        fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
         inode_count: u64,
@@ -119,13 +113,13 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        let inode = subvol.get_inode(fs, device, inode_count)?;
+        let inode = subvol.get_inode(device, inode_count)?;
 
         let btree_root = if inode.btree_root != 0 {
             Some(BtreeNode::new(
                 inode.btree_root,
                 BtreeType::Leaf,
-                &fs.get_data_block(device, inode.btree_root)?,
+                &load_block(device, inode.btree_root)?,
             ))
         } else {
             None
@@ -167,9 +161,9 @@ impl File {
             let written_size = std::cmp::min(data.len(), BLOCK_SIZE - block_offset as usize);
             if let Some(btree_root) = &mut self.btree_root {
                 /* data block has been allocated */
-                if let Ok(entry) = btree_root.lookup(fs, device, block_count) {
+                if let Ok(entry) = btree_root.lookup(device, block_count) {
                     let block = entry.value;
-                    let mut data_block = fs.get_data_block(device, block)?;
+                    let mut data_block = load_block(device, block)?;
 
                     data_block[block_offset as usize..block_offset as usize + written_size]
                         .copy_from_slice(&data[..written_size]);
@@ -178,9 +172,9 @@ impl File {
                         let new_block = crate::block::block_copy_out(fs, subvol, device, block)?;
                         btree_root.modify(fs, subvol, device, block_count, new_block)?;
                         self.inode.btree_root = btree_root.block_count;
-                        fs.set_data_block(device, new_block, data_block)?;
+                        save_block(device, new_block, data_block)?;
                     } else {
-                        fs.set_data_block(device, block, data_block)?;
+                        save_block(device, block, data_block)?;
                     }
                 } else {
                     let data_block_count = subvol.new_block(fs, device)?;
@@ -191,7 +185,7 @@ impl File {
                     block_data[block_offset as usize..block_offset as usize + written_size]
                         .copy_from_slice(&data[..written_size]);
 
-                    fs.set_data_block(device, data_block_count, block_data)?;
+                    save_block(device, data_block_count, block_data)?;
                 }
 
                 if offset + written_size as u64 > self.inode.size {
@@ -228,9 +222,9 @@ impl File {
                 let block_offset = offset % BLOCK_SIZE as u64; // the relative offset to the block
 
                 let read_size;
-                if let Ok(entry) = btree_root.lookup(fs, device, block_count) {
+                if let Ok(entry) = btree_root.lookup(device, block_count) {
                     let block = entry.value;
-                    let block = fs.get_data_block(device, block)?;
+                    let block = load_block(device, block)?;
                     read_size = std::cmp::min(size as usize, BLOCK_SIZE - block_offset as usize);
                     buffer[..read_size].copy_from_slice(
                         &block[block_offset as usize..block_offset as usize + read_size],
@@ -286,7 +280,7 @@ impl File {
                 };
 
                 for i in start_block..end_block {
-                    if btree.lookup(fs, device, i).is_ok() {
+                    if btree.lookup(device, i).is_ok() {
                         btree.remove(fs, subvol, device, i)?;
                     }
                 }
@@ -376,17 +370,14 @@ impl File {
     {
         let inode_group_count = self.inode_count / INODE_PER_GROUP as u64;
         /* check if the inode is multiple referenced */
-        let btree_query_result = subvol
-            .igroup_mgt_btree
-            .lookup(fs, device, inode_group_count)?;
+        let btree_query_result = subvol.igroup_mgt_btree.lookup(device, inode_group_count)?;
         let inode_group_block = btree_query_result.value;
         if btree_query_result.rc > 0 {
-            let mut inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
+            let mut inode_group = INodeGroup::load(load_block(device, inode_group_block)?);
             /* clone data blocks of each inode in the group */
             for (i, inode) in inode_group.inodes.iter().enumerate() {
                 if !inode.is_empty_inode() {
                     clone_by_inode(
-                        fs,
                         subvol,
                         device,
                         self.inode_count - (self.inode_count % INODE_PER_GROUP as u64) + i as u64,
@@ -405,7 +396,6 @@ impl File {
             )?;
             subvol.entry.inode_tree_root = subvol.igroup_mgt_btree.block_count;
             crate::subvol::SubvolumeManager::set_subvolume(
-                fs,
                 device,
                 fs.sb.subvol_mgr,
                 subvol.entry.id,
@@ -447,7 +437,7 @@ pub(crate) fn remove_by_inode<D>(
 where
     D: Read + Write + Seek,
 {
-    let mut inode = subvol.get_inode(fs, device, inode_count)?;
+    let mut inode = subvol.get_inode(device, inode_count)?;
 
     if inode.hlinks > 0 {
         inode.hlinks -= 1;
@@ -456,7 +446,7 @@ where
         let mut btree_root = BtreeNode::new(
             inode.btree_root,
             BtreeType::Leaf,
-            &fs.get_data_block(device, inode.btree_root)?,
+            &load_block(device, inode.btree_root)?,
         );
 
         btree_root.destroy(fs, subvol, device)?;
@@ -475,11 +465,11 @@ pub(crate) fn copy_by_inode<D>(
 where
     D: Read + Write + Seek,
 {
-    let inode = subvol.get_inode(fs, device, inode_count)?;
+    let inode = subvol.get_inode(device, inode_count)?;
     let new_inode_count = subvol.new_inode(fs, device)?;
     let mut new_inode = INode::default();
 
-    clone_by_inode(fs, subvol, device, inode_count)?;
+    clone_by_inode(subvol, device, inode_count)?;
     new_inode.size = inode.size;
     new_inode.btree_root = inode.btree_root;
     subvol.set_inode(fs, device, new_inode_count, new_inode)?;
@@ -488,7 +478,6 @@ where
 
 /** Clone a file, do not allocate inode */
 pub(crate) fn clone_by_inode<D>(
-    fs: &mut Filesystem,
     subvol: &mut Subvolume,
     device: &mut D,
     inode_count: u64,
@@ -496,12 +485,12 @@ pub(crate) fn clone_by_inode<D>(
 where
     D: Read + Write + Seek,
 {
-    let inode = subvol.get_inode(fs, device, inode_count)?;
+    let inode = subvol.get_inode(device, inode_count)?;
     let mut btree_root = BtreeNode::new(
         inode.btree_root,
         BtreeType::Leaf,
-        &fs.get_data_block(device, inode.btree_root)?,
+        &load_block(device, inode.btree_root)?,
     );
-    btree_root.clone_tree(fs, device)?;
+    btree_root.clone_tree(device)?;
     Ok(())
 }

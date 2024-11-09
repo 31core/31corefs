@@ -68,12 +68,11 @@ where
         &base_name!(path),
     )?;
 
-    read_link_from_inode(fs, subvol, device, inode_count)
+    read_link_from_inode(subvol, device, inode_count)
 }
 
 /** Read symbol link by inode count */
 pub(crate) fn read_link_from_inode<D>(
-    fs: &mut Filesystem,
     subvol: &mut Subvolume,
     device: &mut D,
     inode_count: u64,
@@ -81,12 +80,12 @@ pub(crate) fn read_link_from_inode<D>(
 where
     D: Read + Write + Seek,
 {
-    let inode = subvol.get_inode(fs, device, inode_count)?;
+    let inode = subvol.get_inode(device, inode_count)?;
 
     let mut point_to = String::new();
     let mut content_ptr = inode.btree_root;
     'main: loop {
-        let lct = LinkedContentTable::load(fs.get_data_block(device, content_ptr)?);
+        let lct = LinkedContentTable::load_block(device, content_ptr)?;
 
         for byte in lct.data {
             if byte == 0 {

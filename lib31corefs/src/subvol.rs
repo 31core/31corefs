@@ -37,30 +37,24 @@ where
     Ok(first_index)
 }
 
-fn merge_to_shared_bitmap<D>(
-    fs: &mut Filesystem,
-    device: &mut D,
-    bitmap: u64,
-    total_bitmap: u64,
-) -> IOResult<()>
+fn merge_to_shared_bitmap<D>(device: &mut D, bitmap: u64, total_bitmap: u64) -> IOResult<()>
 where
     D: Write + Read + Seek,
 {
-    let mut index_block = BitmapIndexBlock::load(fs.get_data_block(device, bitmap)?);
-    let total_index_block = BitmapIndexBlock::load(fs.get_data_block(device, total_bitmap)?);
+    let mut index_block = BitmapIndexBlock::load_block(device, bitmap)?;
+    let total_index_block = BitmapIndexBlock::load_block(device, total_bitmap)?;
     loop {
         for (bitmap_index, bitmap) in index_block.bitmaps.iter().enumerate() {
-            let bitmap = BitmapBlock::load(fs.get_data_block(device, *bitmap)?);
-            let mut total_bitmap = BitmapBlock::load(
-                fs.get_data_block(device, total_index_block.bitmaps[bitmap_index])?,
-            );
+            let bitmap = BitmapBlock::load_block(device, *bitmap)?;
+            let mut total_bitmap =
+                BitmapBlock::load_block(device, total_index_block.bitmaps[bitmap_index])?;
             for byte in 0..BLOCK_SIZE {
                 total_bitmap.bytes[byte] |= bitmap.bytes[byte];
             }
             total_bitmap.sync(device, total_index_block.bitmaps[bitmap_index])?;
         }
         if index_block.next != 0 {
-            index_block = BitmapIndexBlock::load(fs.get_data_block(device, index_block.next)?);
+            index_block = BitmapIndexBlock::load_block(device, index_block.next)?;
         } else {
             break;
         }
@@ -106,7 +100,7 @@ pub struct SubvolumeEntry {
 impl SubvolumeEntry {
     pub fn load(bytes: &[u8]) -> Self {
         Self {
-            id: u64::from_be_bytes(bytes[0..8].try_into().unwrap()),
+            id: u64::from_be_bytes(bytes[..8].try_into().unwrap()),
             inode_tree_root: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
             root_inode: u64::from_be_bytes(bytes[16..24].try_into().unwrap()),
             bitmap: u64::from_be_bytes(bytes[24..32].try_into().unwrap()),
@@ -189,12 +183,12 @@ impl Block for SubvolumeManager {
 
 impl SubvolumeManager {
     /** Generate ID for a new subvolume */
-    fn generate_new_id<D>(fs: &Filesystem, device: &mut D, mut mgr_block_count: u64) -> u64
+    fn generate_new_id<D>(device: &mut D, mut mgr_block_count: u64) -> u64
     where
         D: Write + Read + Seek,
     {
         loop {
-            let mgr = Self::load(fs.get_data_block(device, mgr_block_count).unwrap());
+            let mgr = Self::load_block(device, mgr_block_count).unwrap();
 
             if mgr.next == 0 {
                 return match mgr.entries.last() {
@@ -206,12 +200,7 @@ impl SubvolumeManager {
             }
         }
     }
-    fn get_subvol_internal<D>(
-        &self,
-        fs: &Filesystem,
-        device: &mut D,
-        id: u64,
-    ) -> IOResult<Subvolume>
+    fn get_subvol_internal<D>(&self, device: &mut D, id: u64) -> IOResult<Subvolume>
     where
         D: Write + Read + Seek,
     {
@@ -222,7 +211,7 @@ impl SubvolumeManager {
                     igroup_mgt_btree: BtreeNode::new(
                         entry.inode_tree_root,
                         BtreeType::Leaf,
-                        &fs.get_data_block(device, entry.inode_tree_root)?,
+                        &load_block(device, entry.inode_tree_root)?,
                     ),
                 });
             }
@@ -234,7 +223,6 @@ impl SubvolumeManager {
     }
     /** Get a subvolume */
     pub fn get_subvolume<D>(
-        fs: &Filesystem,
         device: &mut D,
         mut mgr_block_count: u64,
         id: u64,
@@ -243,9 +231,9 @@ impl SubvolumeManager {
         D: Write + Read + Seek,
     {
         loop {
-            let mgr = Self::load(fs.get_data_block(device, mgr_block_count)?);
+            let mgr = Self::load_block(device, mgr_block_count)?;
 
-            match mgr.get_subvol_internal(fs, device, id) {
+            match mgr.get_subvol_internal(device, id) {
                 Ok(subvol) => return Ok(subvol),
                 Err(err) => {
                     if mgr.next != 0 {
@@ -259,7 +247,6 @@ impl SubvolumeManager {
     }
     /** Set subvolume sntry */
     pub fn set_subvolume<D>(
-        fs: &Filesystem,
         device: &mut D,
         mut mgr_block_count: u64,
         id: u64,
@@ -269,7 +256,7 @@ impl SubvolumeManager {
         D: Write + Read + Seek,
     {
         loop {
-            let mut mgr = Self::load(fs.get_data_block(device, mgr_block_count)?);
+            let mut mgr = Self::load_block(device, mgr_block_count)?;
 
             for (i, this_entry) in mgr.entries.iter().enumerate() {
                 if this_entry.id == id {
@@ -296,14 +283,14 @@ impl SubvolumeManager {
         D: Write + Read + Seek,
     {
         loop {
-            let mut mgr = Self::load(fs.get_data_block(device, mgr_block_count)?);
+            let mut mgr = Self::load_block(device, mgr_block_count)?;
             if mgr.next == 0 {
                 if mgr.entries.len() < SUBVOLUMES {
                     let entry = SubvolumeEntry {
-                        id: Self::generate_new_id(fs, device, mgr_block_count),
+                        id: Self::generate_new_id(device, mgr_block_count),
                         inode_tree_root: BtreeNode::allocate_on_block(fs, device)?,
                         igroup_bitmap: IGroupBitmap::allocate_on_block(fs, device)?,
-                        bitmap: new_bitmap(fs, device, fs.groups.len() * BLOCK_MAP_SIZE)?,
+                        bitmap: new_bitmap(fs, device, fs.groups.len())?,
                         creation_date: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap()
@@ -315,7 +302,7 @@ impl SubvolumeManager {
                     mgr.entries.push(entry);
                     mgr.sync(device, mgr_block_count)?;
 
-                    let mut subvol = Self::get_subvolume(fs, device, mgr_block_count, subvol_id)?;
+                    let mut subvol = Self::get_subvolume(device, mgr_block_count, subvol_id)?;
                     crate::dir::create(fs, &mut subvol, device)?;
                     return Ok(subvol_id);
                 } else {
@@ -339,13 +326,12 @@ impl SubvolumeManager {
     {
         let mut mgr_block_count = orig_mgr_block_count;
         loop {
-            let mut mgr = Self::load(fs.get_data_block(device, mgr_block_count)?);
+            let mut mgr = Self::load_block(device, mgr_block_count)?;
 
             for (i, subvol) in mgr.entries.iter_mut().enumerate() {
                 if subvol.id == id {
                     let mut bitmap_index = 0;
-                    let mut index_block =
-                        BitmapIndexBlock::load(fs.get_data_block(device, subvol.bitmap)?);
+                    let mut index_block = BitmapIndexBlock::load_block(device, subvol.bitmap)?;
 
                     if subvol.snaps == 0 && subvol.state == SUBVOLUME_STATE_REMOVED {
                         subvol.bitmap = subvol.shared_bitmap;
@@ -353,21 +339,16 @@ impl SubvolumeManager {
 
                     /* unmark blocks from global bitmap */
                     for group in 0..fs.groups.len() {
-                        for block_map in 0..fs.groups[group].block_map.len() {
-                            let bitmap = BitmapBlock::load(fs.get_data_block(
-                                device,
-                                index_block.bitmaps[bitmap_index % index_block.bitmaps.len()],
-                            )?);
-                            for byte in 0..BLOCK_SIZE {
-                                fs.groups[group].block_map[block_map].bytes[byte] &=
-                                    !bitmap.bytes[byte];
-                            }
-                            bitmap_index += 1;
-                            if bitmap_index % index_block.bitmaps.len() == 0 {
-                                index_block = BitmapIndexBlock::load(
-                                    fs.get_data_block(device, index_block.next)?,
-                                );
-                            }
+                        let bitmap = BitmapBlock::load_block(
+                            device,
+                            index_block.bitmaps[bitmap_index % index_block.bitmaps.len()],
+                        )?;
+                        for byte in 0..BLOCK_SIZE {
+                            fs.groups[group].block_map.bytes[byte] &= !bitmap.bytes[byte];
+                        }
+                        bitmap_index += 1;
+                        if bitmap_index % index_block.bitmaps.len() == 0 {
+                            index_block = BitmapIndexBlock::load_block(device, index_block.next)?;
                         }
                     }
 
@@ -411,7 +392,7 @@ impl SubvolumeManager {
         D: Read + Write + Seek,
     {
         let subvol_id = Self::new_subvolume(fs, device, mgr_block_count)?;
-        let mut subvol = Self::get_subvolume(fs, device, mgr_block_count, id)?;
+        let mut subvol = Self::get_subvolume(device, mgr_block_count, id)?;
 
         subvol.entry.id = subvol_id;
         subvol.entry.creation_date = std::time::SystemTime::now()
@@ -419,29 +400,27 @@ impl SubvolumeManager {
             .unwrap()
             .as_secs();
         subvol.entry.parent_subvol = id;
-        Self::set_subvolume(fs, device, mgr_block_count, subvol_id, subvol.entry)?;
+        Self::set_subvolume(device, mgr_block_count, subvol_id, subvol.entry)?;
 
-        let mut origin_subvol = Self::get_subvolume(fs, device, mgr_block_count, id)?;
+        let mut origin_subvol = Self::get_subvolume(device, mgr_block_count, id)?;
         origin_subvol.entry.snaps += 1;
         origin_subvol.entry.shared_bitmap = origin_subvol.entry.bitmap;
-        origin_subvol.entry.bitmap = new_bitmap(fs, device, fs.groups.len() * BLOCK_MAP_SIZE)?;
+        origin_subvol.entry.bitmap = new_bitmap(fs, device, fs.groups.len())?;
         if origin_subvol.entry.shared_bitmap != 0 {
             merge_to_shared_bitmap(
-                fs,
                 device,
                 origin_subvol.entry.bitmap,
                 origin_subvol.entry.shared_bitmap,
             )?;
         }
-        Self::set_subvolume(fs, device, mgr_block_count, id, origin_subvol.entry)?;
+        Self::set_subvolume(device, mgr_block_count, id, origin_subvol.entry)?;
 
-        subvol.igroup_mgt_btree.clone_tree(fs, device)?; // clone inode tree
-        IGroupBitmap::clone_blocks(fs, device, subvol.entry.igroup_bitmap)?;
+        subvol.igroup_mgt_btree.clone_tree(device)?; // clone inode tree
+        IGroupBitmap::clone_blocks(device, subvol.entry.igroup_bitmap)?;
         Ok(subvol_id)
     }
     /** List submolumes */
     pub fn list_subvols<D>(
-        fs: &mut Filesystem,
         device: &mut D,
         mut mgr_block_count: u64,
     ) -> IOResult<Vec<SubvolumeEntry>>
@@ -450,7 +429,7 @@ impl SubvolumeManager {
     {
         let mut ids = Vec::new();
         loop {
-            let mgr = Self::load(fs.get_data_block(device, mgr_block_count)?);
+            let mgr = Self::load_block(device, mgr_block_count)?;
 
             for this_entry in &mgr.entries {
                 if this_entry.state != SUBVOLUME_STATE_REMOVED {
@@ -516,19 +495,14 @@ impl Block for IGroupBitmap {
 
 impl IGroupBitmap {
     /** Get if a inode group is vailable */
-    pub fn get_available<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        mut allocator_count: u64,
-        count: u64,
-    ) -> IOResult<bool>
+    pub fn get_available<D>(device: &mut D, mut allocator_count: u64, count: u64) -> IOResult<bool>
     where
         D: Write + Read + Seek,
     {
         let mut byte = count as usize / 8;
         let bit = count as usize % 8;
         loop {
-            let allocator = IGroupBitmap::load(fs.get_data_block(device, allocator_count)?);
+            let allocator = IGroupBitmap::load_block(device, allocator_count)?;
 
             if byte < allocator.bitmap_data.len() {
                 return Ok(allocator.bitmap_data[byte] >> (7 - bit) << 7 != 0);
@@ -554,7 +528,7 @@ impl IGroupBitmap {
 
         let mut last_allocator_count = None;
         loop {
-            let mut allocator = IGroupBitmap::load(fs.get_data_block(device, allocator_count)?);
+            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
 
             if allocator.rc > 0 {
                 allocator.rc -= 1;
@@ -564,7 +538,7 @@ impl IGroupBitmap {
 
                 if let Some(last_allocator_count) = last_allocator_count {
                     let mut last_allocator =
-                        IGroupBitmap::load(fs.get_data_block(device, last_allocator_count)?);
+                        IGroupBitmap::load_block(device, last_allocator_count)?;
                     last_allocator.next = allocator_count;
                     last_allocator.sync(device, last_allocator_count)?;
                 }
@@ -598,7 +572,7 @@ impl IGroupBitmap {
 
         let mut last_allocator_count = None;
         loop {
-            let mut allocator = IGroupBitmap::load(fs.get_data_block(device, allocator_count)?);
+            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
 
             if allocator.rc > 0 {
                 allocator.rc -= 1;
@@ -608,7 +582,7 @@ impl IGroupBitmap {
 
                 if let Some(last_allocator_count) = last_allocator_count {
                     let mut last_allocator =
-                        IGroupBitmap::load(fs.get_data_block(device, last_allocator_count)?);
+                        IGroupBitmap::load_block(device, last_allocator_count)?;
                     last_allocator.next = allocator_count;
                     last_allocator.sync(device, last_allocator_count)?;
                 }
@@ -626,22 +600,18 @@ impl IGroupBitmap {
             }
         }
     }
-    pub fn find_available<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        mut allocator_count: u64,
-    ) -> IOResult<u64>
+    pub fn find_available<D>(device: &mut D, mut allocator_count: u64) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
         loop {
-            let allocator = IGroupBitmap::load(fs.get_data_block(device, allocator_count)?);
+            let allocator = IGroupBitmap::load_block(device, allocator_count)?;
 
             for (i, byte) in allocator.bitmap_data.iter().enumerate() {
                 if *byte != 0 {
                     for j in 0..8 {
                         let position = (i * 8 + j) as u64;
-                        if IGroupBitmap::get_available(fs, device, allocator_count, position)? {
+                        if IGroupBitmap::get_available(device, allocator_count, position)? {
                             return Ok(position);
                         }
                     }
@@ -656,16 +626,12 @@ impl IGroupBitmap {
         }
     }
     /** Recursively clone blocks */
-    pub fn clone_blocks<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        mut allocator_count: u64,
-    ) -> IOResult<()>
+    pub fn clone_blocks<D>(device: &mut D, mut allocator_count: u64) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
         loop {
-            let mut allocator = IGroupBitmap::load(fs.get_data_block(device, allocator_count)?);
+            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
 
             allocator.rc += 1;
             allocator.sync(device, allocator_count)?;
@@ -687,7 +653,7 @@ impl IGroupBitmap {
         D: Write + Read + Seek,
     {
         loop {
-            let mut allocator = IGroupBitmap::load(fs.get_data_block(device, allocator_count)?);
+            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
 
             if allocator.rc > 0 {
                 allocator.rc -= 1;
@@ -712,26 +678,13 @@ pub struct Subvolume {
 }
 
 impl Subvolume {
-    pub fn create<D>(fs: &mut Filesystem, device: &mut D) -> IOResult<Self>
-    where
-        D: Write + Read + Seek,
-    {
-        let mut subvol = Self::default();
-
-        subvol.entry.inode_tree_root = BtreeNode::allocate_on_block(fs, device)?;
-        subvol.entry.igroup_bitmap = IGroupBitmap::allocate_on_block(fs, device)?;
-        subvol.igroup_mgt_btree.block_count = subvol.entry.inode_tree_root;
-
-        Ok(subvol)
-    }
     pub fn new_inode<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
-        if let Ok(inode_group) = IGroupBitmap::find_available(fs, device, self.entry.igroup_bitmap)
-        {
-            let inode_block_count = self.igroup_mgt_btree.lookup(fs, device, inode_group)?.value;
-            let group = INodeGroup::load(fs.get_data_block(device, inode_block_count)?);
+        if let Ok(inode_group) = IGroupBitmap::find_available(device, self.entry.igroup_bitmap) {
+            let inode_block_count = self.igroup_mgt_btree.lookup(device, inode_group)?.value;
+            let group = INodeGroup::load_block(device, inode_block_count)?;
 
             let mut inode_count = 0;
             for (i, inode) in group.inodes.iter().enumerate() {
@@ -744,7 +697,7 @@ impl Subvolume {
             Ok(inode_count)
         } else {
             let inode_group_block = INodeGroup::allocate_on_block(fs, device)?;
-            let inode_group_count = self.igroup_mgt_btree.find_unused(fs, device)?;
+            let inode_group_count = self.igroup_mgt_btree.find_unused(device)?;
             self.igroup_mgt_btree.insert(
                 fs,
                 &mut self.clone(),
@@ -754,13 +707,7 @@ impl Subvolume {
             )?;
             self.entry.inode_tree_root = self.igroup_mgt_btree.block_count;
 
-            SubvolumeManager::set_subvolume(
-                fs,
-                device,
-                fs.sb.subvol_mgr,
-                self.entry.id,
-                self.entry,
-            )?;
+            SubvolumeManager::set_subvolume(device, fs.sb.subvol_mgr, self.entry.id, self.entry)?;
 
             IGroupBitmap::set_available(
                 fs,
@@ -773,7 +720,7 @@ impl Subvolume {
             Ok(inode_group_count * INODE_PER_GROUP as u64)
         }
     }
-    pub fn get_inode<D>(&self, fs: &mut Filesystem, device: &mut D, inode: u64) -> IOResult<INode>
+    pub fn get_inode<D>(&self, device: &mut D, inode: u64) -> IOResult<INode>
     where
         D: Read + Write + Seek,
     {
@@ -781,10 +728,10 @@ impl Subvolume {
         let inode_num = inode as usize % INODE_PER_GROUP;
         let inode_group_block = self
             .igroup_mgt_btree
-            .lookup(fs, device, inode_group_count)?
+            .lookup(device, inode_group_count)?
             .value;
-        let inode_block = fs.get_data_block(device, inode_group_block)?;
-        let inode_group = INodeGroup::load(inode_block);
+
+        let inode_group = INodeGroup::load_block(device, inode_group_block)?;
         Ok(inode_group.inodes[inode_num])
     }
     pub fn set_inode<D>(
@@ -800,13 +747,10 @@ impl Subvolume {
         let inode_group_count = count / INODE_PER_GROUP as u64;
         let inode_num = count as usize % INODE_PER_GROUP;
 
-        let btree_query_result = self
-            .igroup_mgt_btree
-            .lookup(fs, device, inode_group_count)
-            .unwrap();
+        let btree_query_result = self.igroup_mgt_btree.lookup(device, inode_group_count)?;
         let inode_group_block = btree_query_result.value;
 
-        let mut inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
+        let mut inode_group = INodeGroup::load_block(device, inode_group_block)?;
         inode_group.inodes[inode_num] = inode;
 
         if inode_group.is_full() {
@@ -829,19 +773,12 @@ impl Subvolume {
                 new_inode_group_block,
             )?;
             self.entry.inode_tree_root = self.igroup_mgt_btree.block_count;
-            SubvolumeManager::set_subvolume(
-                fs,
-                device,
-                fs.sb.subvol_mgr,
-                self.entry.id,
-                self.entry,
-            )?;
+            SubvolumeManager::set_subvolume(device, fs.sb.subvol_mgr, self.entry.id, self.entry)?;
 
             inode_group.sync(device, new_inode_group_block)?;
             for (i, inode) in inode_group.inodes.iter().enumerate() {
                 if !inode.is_empty_inode() {
                     crate::file::clone_by_inode(
-                        fs,
                         self,
                         device,
                         inode_group_count * INODE_PER_GROUP as u64 + i as u64,
@@ -864,13 +801,11 @@ impl Subvolume {
         D: Read + Write + Seek,
     {
         let inode_group_count = inode / INODE_PER_GROUP as u64;
-        let btree_query_result = self
-            .igroup_mgt_btree
-            .lookup(fs, device, inode_group_count)?;
+        let btree_query_result = self.igroup_mgt_btree.lookup(device, inode_group_count)?;
         let inode_group_block = btree_query_result.value;
         self.set_inode(fs, device, inode, INode::empty())?;
 
-        let inode_group = INodeGroup::load(fs.get_data_block(device, inode_group_block)?);
+        let inode_group = INodeGroup::load_block(device, inode_group_block)?;
 
         /* release inode group */
         if inode_group.is_empty() {
@@ -898,18 +833,19 @@ impl Subvolume {
         self.entry.real_used_blocks += 1;
         let mut count = count_orig;
 
-        let mut index = BitmapIndexBlock::load(fs.get_data_block(device, self.entry.bitmap)?);
+        let mut index = BitmapIndexBlock::load_block(device, self.entry.bitmap)?;
         loop {
             if count < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
-                let mut bitmap = BitmapBlock::load(
-                    fs.get_data_block(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?,
-                );
+                let mut bitmap = BitmapBlock::load_block(
+                    device,
+                    index.bitmaps[count as usize / (8 * BLOCK_SIZE)],
+                )?;
                 bitmap.set_used(count % (8 * BLOCK_SIZE as u64));
                 bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
                 break;
             }
             count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
-            index = BitmapIndexBlock::load(fs.get_data_block(device, index.next)?);
+            index = BitmapIndexBlock::load_block(device, index.next)?;
         }
 
         Ok(count_orig)
@@ -924,18 +860,18 @@ impl Subvolume {
     where
         D: Read + Write + Seek,
     {
-        let mut index =
-            BitmapIndexBlock::load(fs.get_data_block(device, self.entry.shared_bitmap)?);
+        let mut index = BitmapIndexBlock::load_block(device, self.entry.shared_bitmap)?;
         loop {
             if count < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
-                let mut bitmap = BitmapBlock::load(
-                    fs.get_data_block(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?,
-                );
+                let mut bitmap = BitmapBlock::load_block(
+                    device,
+                    index.bitmaps[count as usize / (8 * BLOCK_SIZE)],
+                )?;
                 if bitmap.get_used(count % (8 * BLOCK_SIZE as u64)) {
                     bitmap.set_unused(count % (8 * BLOCK_SIZE as u64));
                     bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
                 } else {
-                    SubvolumeManager::get_subvolume(fs, device, 0, self.entry.parent_subvol)?
+                    SubvolumeManager::get_subvolume(device, 0, self.entry.parent_subvol)?
                         .release_block(fs, device, count)?;
                     return Ok(());
                 }
@@ -943,7 +879,7 @@ impl Subvolume {
                 break;
             }
             count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
-            index = BitmapIndexBlock::load(fs.get_data_block(device, index.next)?);
+            index = BitmapIndexBlock::load_block(device, index.next)?;
         }
 
         fs.release_block(count);
@@ -961,12 +897,13 @@ impl Subvolume {
     where
         D: Read + Write + Seek,
     {
-        let mut index = BitmapIndexBlock::load(fs.get_data_block(device, self.entry.bitmap)?);
+        let mut index = BitmapIndexBlock::load_block(device, self.entry.bitmap)?;
         loop {
             if count < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
-                let mut bitmap = BitmapBlock::load(
-                    fs.get_data_block(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?,
-                );
+                let mut bitmap = BitmapBlock::load_block(
+                    device,
+                    index.bitmaps[count as usize / (8 * BLOCK_SIZE)],
+                )?;
                 if bitmap.get_used(count % (8 * BLOCK_SIZE as u64)) {
                     bitmap.set_unused(count % (8 * BLOCK_SIZE as u64));
                     bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
@@ -978,7 +915,7 @@ impl Subvolume {
                 break;
             }
             count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
-            index = BitmapIndexBlock::load(fs.get_data_block(device, index.next)?);
+            index = BitmapIndexBlock::load_block(device, index.next)?;
         }
 
         fs.release_block(count);

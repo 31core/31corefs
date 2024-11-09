@@ -18,6 +18,12 @@ fn main() -> std::io::Result<()> {
 
     println!("Label: {}", fs.sb.get_label());
     println!("UUID: {}", uuid::Uuid::from_bytes(fs.sb.uuid));
+    println!(
+        "Creation time: {}",
+        chrono::DateTime::from_timestamp(fs.sb.creation_time as i64, 0)
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S")
+    );
     println!("Dufault subvolume: {}", fs.sb.default_subvol);
     println!("Total blocks: {}", fs.sb.total_blocks);
     println!("Used blocks: {}", fs.sb.used_blocks);

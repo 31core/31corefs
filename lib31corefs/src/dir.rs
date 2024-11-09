@@ -30,7 +30,7 @@ impl Directory {
         dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
 
         Ok(Self {
-            fd: File::open_by_inode(fs, subvol, device, inode_count)?,
+            fd: File::open_by_inode(subvol, device, inode_count)?,
         })
     }
     pub fn open<D>(
@@ -46,7 +46,7 @@ impl Directory {
         path.remove(0);
 
         let mut dir = Self {
-            fd: File::open_by_inode(fs, subvol, device, 0)?,
+            fd: File::open_by_inode(subvol, device, subvol.entry.root_inode)?,
         };
 
         for file in path {
@@ -62,11 +62,11 @@ impl Directory {
                     ))
                 }
             }
-            let inode = subvol.get_inode(fs, device, inode_count)?;
+            let inode = subvol.get_inode(device, inode_count)?;
 
             /* read link and open orignal directory */
             if inode.is_symlink() {
-                let original_path = read_link_from_inode(fs, subvol, device, inode_count)?;
+                let original_path = read_link_from_inode(subvol, device, inode_count)?;
                 return Self::open(fs, subvol, device, &original_path);
             } else if !inode.is_dir() {
                 return Err(Error::new(
@@ -75,7 +75,7 @@ impl Directory {
                 ));
             }
             dir = Self {
-                fd: File::from_inode(fs, device, inode_count, inode)?,
+                fd: File::from_inode(device, inode_count, inode)?,
             };
         }
 
@@ -222,7 +222,7 @@ impl Directory {
     where
         D: Read + Write + Seek,
     {
-        let mut fd = subvol.get_inode(fs, device, inode)?;
+        let mut fd = subvol.get_inode(device, inode)?;
         fd.hlinks += 1;
         subvol.set_inode(fs, device, inode, fd)?;
         self.add_file(fs, subvol, device, file_name, inode)?;
@@ -268,7 +268,7 @@ where
     D: Read + Write + Seek,
 {
     let inode_count = crate::file::create(fs, subvol, device)?;
-    let mut inode = subvol.get_inode(fs, device, inode_count)?;
+    let mut inode = subvol.get_inode(device, inode_count)?;
     inode.acl = ACL_DIRECTORY << PERMISSION_BITS;
     subvol.set_inode(fs, device, inode_count, inode)?;
     Ok(inode_count)
@@ -284,7 +284,7 @@ pub(crate) fn remove_by_inode<D>(
 where
     D: Read + Write + Seek,
 {
-    let inode = subvol.get_inode(fs, device, inode_count)?;
+    let inode = subvol.get_inode(device, inode_count)?;
     if inode.size > 0 {
         Err(Error::new(
             ErrorKind::PermissionDenied,
