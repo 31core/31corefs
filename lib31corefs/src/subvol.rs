@@ -643,6 +643,7 @@ impl IGroupBitmap {
             }
         }
     }
+    #[allow(unused)]
     /** Recursively destroy blocks */
     pub fn destroy_blocks<D>(
         fs: &mut Filesystem,

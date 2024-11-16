@@ -1,16 +1,20 @@
 pub mod block;
-pub mod dir;
-pub mod file;
 pub mod inode;
-pub mod subvol;
-pub mod symlink;
 
 mod btree;
+mod dir;
+mod file;
 mod path_util;
+mod subvol;
+mod symlink;
+
+pub use dir::Directory;
+pub use file::File;
+pub use subvol::Subvolume;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use block::*;
 use path_util::{base_name, dir_path};
@@ -22,8 +26,7 @@ pub const FS_VERSION: u8 = 1;
 #[derive(Debug, Default, Clone)]
 pub struct Filesystem {
     pub sb: SuperBlock,
-    pub subvol_mgr: SubvolumeManager,
-    pub groups: Vec<BlockGroup>,
+    groups: Vec<BlockGroup>,
 }
 
 impl Filesystem {
@@ -81,16 +84,10 @@ impl Filesystem {
             }
         }
 
-        let subvol_mgr = SubvolumeManager::load(load_block(device, sb.subvol_mgr)?);
-
-        Ok(Self {
-            sb,
-            groups,
-            subvol_mgr,
-        })
+        Ok(Self { sb, groups })
     }
     /** Allocate a data block */
-    pub fn new_block(&mut self) -> IOResult<u64> {
+    pub(crate) fn new_block(&mut self) -> IOResult<u64> {
         for group in &mut self.groups {
             if let Some(count) = group.new_block() {
                 self.sb.used_blocks += 1;
@@ -101,7 +98,7 @@ impl Filesystem {
         Err(Error::new(ErrorKind::Other, "No enough block"))
     }
     /** Release a data block */
-    pub fn release_block(&mut self, count: u64) {
+    pub(crate) fn release_block(&mut self, count: u64) {
         let mut group_count = 0;
         while group_count < self.groups.len() - 1
             && count > self.groups[group_count].start_block
@@ -127,6 +124,7 @@ impl Filesystem {
 
         Ok(())
     }
+    /** Create a subvolume and return it's ID */
     pub fn new_subvolume<D>(&mut self, device: &mut D) -> IOResult<u64>
     where
         D: Read + Write + Seek,
@@ -153,7 +151,7 @@ impl Filesystem {
     {
         SubvolumeManager::get_subvolume(device, self.sb.subvol_mgr, self.sb.default_subvol)
     }
-    /** Create a snapshot */
+    /** Create a snapshot and return it's ID */
     pub fn create_snapshot<D>(&mut self, device: &mut D, id: u64) -> IOResult<u64>
     where
         D: Read + Write + Seek,
@@ -167,19 +165,137 @@ impl Filesystem {
     {
         SubvolumeManager::list_subvols(device, self.sb.subvol_mgr)
     }
+    /** Create a regular file */
+    pub fn create_file<D, P>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+    ) -> IOResult<File>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        File::create(self, subvol, device, path)
+    }
+    /** Open a regular file */
+    pub fn open_file<D, P>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+    ) -> IOResult<File>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        File::open(self, subvol, device, path)
+    }
+    /** Remove a regular file or a symbol link */
+    pub fn remove_file<D, P>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+    ) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        File::remove(self, subvol, device, path)
+    }
     pub fn is_file<D, P>(&mut self, subvol: &mut Subvolume, device: &mut D, path: P) -> bool
     where
         D: Read + Write + Seek,
         P: AsRef<Path>,
     {
-        file::File::open(self, subvol, device, path.as_ref()).is_ok()
+        File::open(self, subvol, device, path.as_ref()).is_ok()
     }
     pub fn is_dir<D, P>(&mut self, subvol: &mut Subvolume, device: &mut D, path: P) -> bool
     where
         D: Read + Write + Seek,
         P: AsRef<Path>,
     {
-        dir::Directory::open(self, subvol, device, path).is_ok()
+        Directory::open(self, subvol, device, path).is_ok()
+    }
+    pub fn is_link<D, P>(&mut self, subvol: &mut Subvolume, device: &mut D, path: P) -> bool
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        if let Ok(fd) = file::File::open(self, subvol, device, path.as_ref()) {
+            if fd.get_inode().is_symlink() {
+                return true;
+            }
+        }
+
+        false
+    }
+    /** List a diretory */
+    pub fn list_dir<D, P>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+    ) -> IOResult<Vec<String>>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        Ok(Directory::open(self, subvol, device, path)?
+            .list_dir(self, subvol, device)?
+            .keys()
+            .cloned()
+            .collect::<Vec<String>>())
+    }
+    /** Create a directory */
+    pub fn mkdir<D, P>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+    ) -> IOResult<Directory>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        Directory::create(self, subvol, device, path)
+    }
+    /** Remove a directory */
+    pub fn rmdir<D, P>(&mut self, subvol: &mut Subvolume, device: &mut D, path: P) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        Directory::remove(self, subvol, device, path)
+    }
+    /** Create sybmol link */
+    pub fn link<D, P>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+        point_to: &str,
+    ) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        symlink::create(self, subvol, device, path, point_to)?;
+
+        Ok(())
+    }
+    pub fn read_link<D, P>(
+        &mut self,
+        subvol: &mut Subvolume,
+        device: &mut D,
+        path: P,
+    ) -> IOResult<PathBuf>
+    where
+        D: Read + Write + Seek,
+        P: AsRef<Path>,
+    {
+        symlink::read_link(self, subvol, device, path)
     }
     /** Rename a regular file, directory or a symbol link */
     pub fn rename<D, P>(
@@ -193,14 +309,14 @@ impl Filesystem {
         D: Read + Write + Seek,
         P: AsRef<Path>,
     {
-        let mut src_dir = dir::Directory::open(self, subvol, device, dir_path(src.as_ref()))?;
+        let mut src_dir = Directory::open(self, subvol, device, dir_path(src.as_ref()))?;
         let inode = *src_dir
             .list_dir(self, subvol, device)?
             .get(base_name(src.as_ref()))
             .unwrap();
         src_dir.remove_file(self, subvol, device, base_name(src.as_ref()))?;
 
-        dir::Directory::open(self, subvol, device, dir_path(dst.as_ref()))?.add_file(
+        Directory::open(self, subvol, device, dir_path(dst.as_ref()))?.add_file(
             self,
             subvol,
             device,

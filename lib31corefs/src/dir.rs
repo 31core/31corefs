@@ -16,7 +16,7 @@ pub struct Directory {
 
 impl Directory {
     /** Create a directory */
-    pub fn create<D, P>(
+    pub(crate) fn create<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
@@ -117,7 +117,7 @@ impl Directory {
         Ok(files)
     }
     /* Find inode under the directory */
-    pub fn find_inode_by_name<D>(
+    pub(crate) fn find_inode_by_name<D>(
         &mut self,
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
@@ -139,7 +139,7 @@ impl Directory {
         self.fd.get_inode()
     }
     /** Add file into directory */
-    pub fn add_file<D>(
+    pub(crate) fn add_file<D>(
         &mut self,
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
@@ -168,7 +168,7 @@ impl Directory {
         Ok(())
     }
     /** Remove a file into directory */
-    pub fn remove_file<D>(
+    pub(crate) fn remove_file<D>(
         &mut self,
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
@@ -229,7 +229,7 @@ impl Directory {
         Ok(())
     }
     /** Remove a directory */
-    pub fn remove<D, P>(
+    pub(crate) fn remove<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,

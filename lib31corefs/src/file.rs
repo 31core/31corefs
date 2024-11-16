@@ -310,7 +310,7 @@ impl File {
         Ok(())
     }
     /** Remove a regular file or a symbol link */
-    pub fn remove<D, P>(
+    pub(crate) fn remove<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
