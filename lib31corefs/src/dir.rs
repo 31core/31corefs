@@ -1,13 +1,14 @@
 use crate::file::File;
 use crate::inode::{INode, ACL_DIRECTORY, PERMISSION_BITS};
+use crate::path_util::{base_name, dir_path};
 use crate::subvol::Subvolume;
 use crate::symlink::read_link_from_inode;
 use crate::Filesystem;
-use crate::{base_name, dir_name};
 
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
+use std::path::Path;
 
 pub struct Directory {
     fd: File,
@@ -15,41 +16,40 @@ pub struct Directory {
 
 impl Directory {
     /** Create a directory */
-    pub fn create<D>(
+    pub fn create<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        path: &str,
+        path: P,
     ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
         let inode_count = create(fs, subvol, device)?;
 
-        let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
-        dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
+        let mut dir = Directory::open(fs, subvol, device, dir_path(path.as_ref()))?;
+        dir.add_file(fs, subvol, device, base_name(path.as_ref()), inode_count)?;
 
         Ok(Self {
             fd: File::open_by_inode(subvol, device, inode_count)?,
         })
     }
-    pub fn open<D>(
+    pub fn open<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        path: &str,
+        path: P,
     ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
-        let mut path: Vec<&std::ffi::OsStr> = std::path::Path::new(path).iter().collect();
-        path.remove(0);
-
         let mut dir = Self {
             fd: File::open_by_inode(subvol, device, subvol.entry.root_inode)?,
         };
 
-        for file in path {
+        for file in path.as_ref().iter().skip(1) {
             let dirs = dir.list_dir(fs, subvol, device)?;
 
             let inode_count;
@@ -229,29 +229,30 @@ impl Directory {
         Ok(())
     }
     /** Remove a directory */
-    pub fn remove<D>(
+    pub fn remove<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        path: &str,
+        path: P,
     ) -> IOResult<()>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
-        let dir = Self::open(fs, subvol, device, path)?;
+        let dir = Self::open(fs, subvol, device, &path)?;
 
         if dir.fd.get_inode().size > 0 {
             Err(Error::new(
                 ErrorKind::PermissionDenied,
-                format!("'{}' is not empty.", path),
+                format!("'{}' is not empty.", path.as_ref().to_str().unwrap()),
             ))
         } else {
             remove_by_inode(fs, subvol, device, dir.fd.get_inode_count())?;
-            Directory::open(fs, subvol, device, &dir_name!(path))?.remove_file(
+            Directory::open(fs, subvol, device, dir_path(path.as_ref()))?.remove_file(
                 fs,
                 subvol,
                 device,
-                &base_name!(path),
+                base_name(path.as_ref()),
             )?;
             Ok(())
         }

@@ -1,22 +1,25 @@
 use crate::block::LinkedContentTable;
 use crate::dir::Directory;
 use crate::inode::{INode, ACL_SYMBOLLINK, PERMISSION_BITS};
+use crate::path_util::{base_name, dir_path};
 use crate::subvol::Subvolume;
-use crate::{base_name, dir_name, Block, Filesystem};
+use crate::{Block, Filesystem};
 
 use std::io::Result as IOResult;
 use std::io::{Read, Seek, Write};
+use std::path::{Path, PathBuf};
 
 /** Create a symbol link */
-pub fn create<D>(
+pub fn create<D, P>(
     fs: &mut Filesystem,
     subvol: &mut Subvolume,
     device: &mut D,
-    path: &str,
+    path: P,
     mut point_to: &str,
 ) -> IOResult<u64>
 where
     D: Read + Write + Seek,
+    P: AsRef<Path>,
 {
     let inode_count = subvol.new_inode(fs, device)?;
 
@@ -45,28 +48,25 @@ where
 
     subvol.set_inode(fs, device, inode_count, inode)?;
 
-    let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
-    dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
+    let mut dir = Directory::open(fs, subvol, device, dir_path(path.as_ref()))?;
+    dir.add_file(fs, subvol, device, base_name(path.as_ref()), inode_count)?;
 
     Ok(inode_count)
 }
 
 /** Read symbol link */
-pub fn read_link<D>(
+pub fn read_link<D, P>(
     fs: &mut Filesystem,
     subvol: &mut Subvolume,
     device: &mut D,
-    path: &str,
-) -> IOResult<String>
+    path: P,
+) -> IOResult<PathBuf>
 where
     D: Read + Write + Seek,
+    P: AsRef<Path>,
 {
-    let inode_count = Directory::open(fs, subvol, device, &dir_name!(path))?.find_inode_by_name(
-        fs,
-        subvol,
-        device,
-        &base_name!(path),
-    )?;
+    let inode_count = Directory::open(fs, subvol, device, dir_path(path.as_ref()))?
+        .find_inode_by_name(fs, subvol, device, base_name(path.as_ref()))?;
 
     read_link_from_inode(subvol, device, inode_count)
 }
@@ -76,7 +76,7 @@ pub(crate) fn read_link_from_inode<D>(
     subvol: &mut Subvolume,
     device: &mut D,
     inode_count: u64,
-) -> IOResult<String>
+) -> IOResult<PathBuf>
 where
     D: Read + Write + Seek,
 {
@@ -98,5 +98,5 @@ where
         content_ptr = lct.next;
     }
 
-    Ok(point_to)
+    Ok(point_to.into())
 }

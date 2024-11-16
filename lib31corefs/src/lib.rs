@@ -6,11 +6,14 @@ pub mod subvol;
 pub mod symlink;
 
 mod btree;
+mod path_util;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
+use std::path::Path;
 
 use block::*;
+use path_util::{base_name, dir_path};
 use subvol::*;
 
 pub const FS_MAGIC_HEADER: [u8; 4] = [0x31, 0xc0, 0x8e, 0xf5];
@@ -164,41 +167,44 @@ impl Filesystem {
     {
         SubvolumeManager::list_subvols(device, self.sb.subvol_mgr)
     }
-    pub fn is_file<D>(&mut self, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
+    pub fn is_file<D, P>(&mut self, subvol: &mut Subvolume, device: &mut D, path: P) -> bool
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
-        file::File::open(self, subvol, device, path).is_ok()
+        file::File::open(self, subvol, device, path.as_ref()).is_ok()
     }
-    pub fn is_dir<D>(&mut self, subvol: &mut Subvolume, device: &mut D, path: &str) -> bool
+    pub fn is_dir<D, P>(&mut self, subvol: &mut Subvolume, device: &mut D, path: P) -> bool
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
         dir::Directory::open(self, subvol, device, path).is_ok()
     }
     /** Rename a regular file, directory or a symbol link */
-    pub fn rename<D>(
+    pub fn rename<D, P>(
         &mut self,
         subvol: &mut Subvolume,
         device: &mut D,
-        src: &str,
-        dst: &str,
+        src: P,
+        dst: P,
     ) -> IOResult<()>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
-        let mut src_dir = dir::Directory::open(self, subvol, device, &dir_name!(src))?;
+        let mut src_dir = dir::Directory::open(self, subvol, device, dir_path(src.as_ref()))?;
         let inode = *src_dir
             .list_dir(self, subvol, device)?
-            .get(&base_name!(src))
+            .get(base_name(src.as_ref()))
             .unwrap();
-        src_dir.remove_file(self, subvol, device, &base_name!(src))?;
+        src_dir.remove_file(self, subvol, device, base_name(src.as_ref()))?;
 
-        dir::Directory::open(self, subvol, device, &dir_name!(dst))?.add_file(
+        dir::Directory::open(self, subvol, device, dir_path(dst.as_ref()))?.add_file(
             self,
             subvol,
             device,
-            &base_name!(dst),
+            base_name(dst.as_ref()),
             inode,
         )?;
 

@@ -2,34 +2,14 @@ use crate::block::*;
 use crate::btree::*;
 use crate::dir::Directory;
 use crate::inode::{INode, ACL_REGULAR_FILE, INODE_PER_GROUP, PERMISSION_BITS};
+use crate::path_util::{base_name, dir_path};
 use crate::subvol::Subvolume;
 use crate::symlink::read_link_from_inode;
 use crate::Filesystem;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
-
-#[macro_export]
-macro_rules! dir_name {
-    ($path: expr) => {
-        std::path::Path::new($path)
-            .parent()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
-    };
-}
-
-#[macro_export]
-macro_rules! base_name {
-    ($path: expr) => {
-        std::path::Path::new($path)
-            .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
-    };
-}
+use std::path::Path;
 
 #[derive(Debug)]
 pub struct File {
@@ -40,19 +20,20 @@ pub struct File {
 
 impl File {
     /** Create a file */
-    pub fn create<D>(
+    pub fn create<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        path: &str,
+        path: P,
     ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
         let inode_count = create(fs, subvol, device)?;
 
-        let mut dir = Directory::open(fs, subvol, device, &dir_name!(path))?;
-        dir.add_file(fs, subvol, device, &base_name!(path), inode_count)?;
+        let mut dir = Directory::open(fs, subvol, device, dir_path(path.as_ref()))?;
+        dir.add_file(fs, subvol, device, base_name(path.as_ref()), inode_count)?;
 
         Self::open_by_inode(subvol, device, inode_count)
     }
@@ -77,17 +58,18 @@ impl File {
         })
     }
     /** Open regular file by absolute path */
-    pub fn open<D>(
+    pub fn open<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        path: &str,
+        path: P,
     ) -> IOResult<Self>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
-        let inode_count = Directory::open(fs, subvol, device, &dir_name!(path))?
-            .find_inode_by_name(fs, subvol, device, &base_name!(path))?;
+        let inode_count = Directory::open(fs, subvol, device, dir_path(path.as_ref()))?
+            .find_inode_by_name(fs, subvol, device, base_name(path.as_ref()))?;
 
         let inode = subvol.get_inode(device, inode_count)?;
 
@@ -98,7 +80,7 @@ impl File {
         } else if inode.is_dir() {
             Err(Error::new(
                 ErrorKind::Unsupported,
-                format!("'{}' is a directory.", path),
+                format!("'{}' is a directory.", path.as_ref().to_str().unwrap()),
             ))
         } else {
             Self::open_by_inode(subvol, device, inode_count)
@@ -303,40 +285,42 @@ impl File {
         self.inode
     }
     /** Copy a regular file or a symbol link */
-    pub fn copy<D>(
+    pub fn copy<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        src: &str,
-        dst: &str,
+        src: P,
+        dst: P,
     ) -> IOResult<()>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
-        let fd = Self::open(fs, subvol, device, src)?;
+        let fd = Self::open(fs, subvol, device, &src)?;
         let inode = copy_by_inode(fs, subvol, device, fd.inode_count)?;
 
-        Directory::open(fs, subvol, device, &dir_name!(src))?.add_file(
+        Directory::open(fs, subvol, device, dir_path(src.as_ref()))?.add_file(
             fs,
             subvol,
             device,
-            &base_name!(dst),
+            base_name(dst.as_ref()),
             inode,
         )?;
 
         Ok(())
     }
     /** Remove a regular file or a symbol link */
-    pub fn remove<D>(
+    pub fn remove<D, P>(
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        path: &str,
+        path: P,
     ) -> IOResult<()>
     where
         D: Read + Write + Seek,
+        P: AsRef<Path>,
     {
-        let mut fd = Self::open(fs, subvol, device, path)?;
+        let mut fd = Self::open(fs, subvol, device, &path)?;
 
         fd.handle_rc_inode(fs, subvol, device)?;
 
@@ -345,11 +329,11 @@ impl File {
         } else {
             remove_by_inode(fs, subvol, device, fd.inode_count)?;
 
-            Directory::open(fs, subvol, device, &dir_name!(path))?.remove_file(
+            Directory::open(fs, subvol, device, dir_path(path.as_ref()))?.remove_file(
                 fs,
                 subvol,
                 device,
-                &base_name!(path),
+                base_name(path.as_ref()),
             )?;
         }
 
