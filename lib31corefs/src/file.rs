@@ -1,5 +1,5 @@
-use crate::block::*;
-use crate::btree::*;
+use crate::block::{load_block, save_block, Block, INodeGroup, BLOCK_SIZE};
+use crate::btree::{BtreeNode, BtreeType};
 use crate::dir::Directory;
 use crate::inode::{INode, ACL_REGULAR_FILE, INODE_PER_GROUP, PERMISSION_BITS};
 use crate::path_util::{base_name, dir_path};
@@ -42,11 +42,7 @@ impl File {
         D: Read + Write + Seek,
     {
         let btree_root = if inode.btree_root != 0 {
-            Some(BtreeNode::new(
-                inode.btree_root,
-                BtreeType::Leaf,
-                &load_block(device, inode.btree_root)?,
-            ))
+            Some(BtreeNode::load_block(device, inode.btree_root)?)
         } else {
             None
         };
@@ -98,11 +94,7 @@ impl File {
         let inode = subvol.get_inode(device, inode_count)?;
 
         let btree_root = if inode.btree_root != 0 {
-            Some(BtreeNode::new(
-                inode.btree_root,
-                BtreeType::Leaf,
-                &load_block(device, inode.btree_root)?,
-            ))
+            Some(BtreeNode::load_block(device, inode.btree_root)?)
         } else {
             None
         };
@@ -427,11 +419,8 @@ where
         inode.hlinks -= 1;
         subvol.set_inode(fs, device, inode_count, inode)?;
     } else if inode.btree_root != 0 {
-        let mut btree_root = BtreeNode::new(
-            inode.btree_root,
-            BtreeType::Leaf,
-            &load_block(device, inode.btree_root)?,
-        );
+        let mut btree_root = BtreeNode::load_block(device, inode.btree_root)?;
+        btree_root.block_count = inode.btree_root;
 
         btree_root.destroy(fs, subvol, device)?;
         subvol.release_inode(fs, device, inode_count)?;
@@ -470,11 +459,8 @@ where
     D: Read + Write + Seek,
 {
     let inode = subvol.get_inode(device, inode_count)?;
-    let mut btree_root = BtreeNode::new(
-        inode.btree_root,
-        BtreeType::Leaf,
-        &load_block(device, inode.btree_root)?,
-    );
+    let mut btree_root = BtreeNode::load_block(device, inode.btree_root)?;
+    btree_root.block_count = inode.btree_root;
     btree_root.clone_tree(device)?;
     Ok(())
 }

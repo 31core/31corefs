@@ -161,7 +161,7 @@ impl Block for SuperBlock {
     fn dump(&self) -> [u8; BLOCK_SIZE] {
         let mut bytes = [0; BLOCK_SIZE];
 
-        bytes[0..4].copy_from_slice(&crate::FS_MAGIC_HEADER);
+        bytes[..4].copy_from_slice(&crate::FS_MAGIC_HEADER);
         bytes[4] = crate::FS_VERSION;
         bytes[5..13].copy_from_slice(&self.groups.to_be_bytes());
         bytes[13..29].copy_from_slice(&self.uuid);

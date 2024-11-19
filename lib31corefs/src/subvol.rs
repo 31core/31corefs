@@ -1,8 +1,9 @@
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::block::*;
-use crate::btree::{BtreeNode, BtreeType};
+use crate::btree::BtreeNode;
 use crate::inode::{INode, INODE_PER_GROUP};
 use crate::Filesystem;
 
@@ -206,13 +207,11 @@ impl SubvolumeManager {
     {
         for entry in &self.entries {
             if entry.id == id {
+                let mut igroup_mgt_btree = BtreeNode::load_block(device, entry.inode_tree_root)?;
+                igroup_mgt_btree.block_count = entry.inode_tree_root;
                 return Ok(Subvolume {
                     entry: *entry,
-                    igroup_mgt_btree: BtreeNode::new(
-                        entry.inode_tree_root,
-                        BtreeType::Leaf,
-                        &load_block(device, entry.inode_tree_root)?,
-                    ),
+                    igroup_mgt_btree,
                 });
             }
         }
@@ -291,8 +290,8 @@ impl SubvolumeManager {
                         inode_tree_root: BtreeNode::allocate_on_block(fs, device)?,
                         igroup_bitmap: IGroupBitmap::allocate_on_block(fs, device)?,
                         bitmap: new_bitmap(fs, device, fs.groups.len())?,
-                        creation_date: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
+                        creation_date: SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_secs(),
                         state: SUBVOLUME_STATE_ALLOCATED,

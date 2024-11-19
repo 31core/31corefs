@@ -2,10 +2,10 @@
 #set par(justify: true)
 #set table(stroke: 0.5pt)
 
-#align(center)[#text(17pt)[*31corefs Specification*]]
+#align(center)[#text(17pt)[*31corefs specification*]]
 
 #align(center)[
-  Author: 31core\
+  Author: 31core \
   Email: #link("mailto:31core@tutanota.com") \
   Version: 1.0-dev
 ]
@@ -27,13 +27,6 @@ Supported features:
     [BLOCK_SIZE], [Unit size of blocks, currently supports 4096 block size.]
 )
 
-Subvolume statement:
-#table(columns: (auto, auto),
-    [*Constant*], [*Value*],
-    [SUBVOLUME_STATE_ALLOCATED], [1],
-    [SUBVOLUME_STATE_REMOVED], [2]
-)
-
 = Super block
 The super block is the first block of the physical device, it records metadata describing the filesystem.
 
@@ -48,6 +41,7 @@ struct super_block {
     uint64_t real_used_blocks;
     uint64_t default_subvol;
     uint64_t subvol_mgr;
+    uint64_t creation_time;
 };
 ```
 
@@ -63,8 +57,15 @@ struct super_block {
 )
 
 = Block group
-The whole filesystem is divided into several block groups, each block group is an independent block allocator. A block group includes a bitmap block and $8 times 4096$ data blocks. The bitmap is ahead of the the data blocks and is uesd to tracking allocation of the data blocks.
+The whole filesystem is divided into several block groups, each block group is an independent block allocator. A block group includes a bitmap block and $8 times "BLOCK_SIZE"$ data blocks. The meta block is the first block of a block group, it records allocation status of the block groups. And the bitmap is the second block of a block group and it is uesd to tracking allocation of the data blocks.
 
+```c
+struct block_group_meta {
+    uint64_t id;
+    uint64_t free_blocks;
+    uint64_t next_group;
+};
+```
 
 = B-Tree
 == B-Tree entry 
@@ -94,9 +95,12 @@ A leaf B-Tree node contains 170 leaf entries.
 
 ```c
 struct btree_leaf_node {
-    uint64_t entry_count;
+    uint16_t entry_count;
+    uint8_t reserved1;
+    uint8_t type;
+    uint32_t reserved2;
     uint64_t rc;
-    btree_internal_entry entries[170];
+    struct btree_internal_entry entries[170];
 };
 ```
 
@@ -104,16 +108,22 @@ An internal B-Tree node contains 255 internal entries.
 
 ```c
 struct btree_internal_node {
-    uint64_t entry_count;
-    uint8_t depth[8];
+    uint16_t entry_count;
+    uint8_t reserved1;
+    uint8_t type;
+    uint32_t reserved2;
     uint64_t rc;
-    btree_internal_entry entries[255];
+    struct btree_internal_entry entries[255];
 };
 ```
 
 A B-Tree node (both internal and leaf) is stored in a block, its `rc` value means how many times did the block referenced, clone step must be performed before modification when `rc` is greater than `0`.
 
-The root node uses `depth[0]` to store tree height, otherwise set `0`.
+B-Tree type definitions:
+#table(columns: 2,
+  [BTREE_NODE_TYPE_INTERNAL], [`0xf0`],
+  [BTREE_NODE_TYPE_LEAF], [`0x0f`],
+)
 
 = Inode
 Inode records the metadata of a file.
@@ -213,13 +223,19 @@ struct subvolume_entry {
 };
 ```
 
+Subvolume statement used by `state` field:
+#table(columns: 2,
+    [SUBVOLUME_STATE_ALLOCATED], [`0x01`],
+    [SUBVOLUME_STATE_REMOVED], [`0x02`]
+)
+
 == Subvolume manager
 *Definition*
 ```c
 struct subvolume_manager {
     uint64_t next;
     uint64_t count;
-    subvolume_entry entries[63];
+    struct subvolume_entry entries[63];
 };
 ```
 Subvolume manager is a linked list.
