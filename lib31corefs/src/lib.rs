@@ -100,14 +100,14 @@ impl Filesystem {
     /** Release a data block */
     pub(crate) fn release_block(&mut self, count: u64) {
         let mut group_count = 0;
-        while group_count < self.groups.len() - 1
+        while !(group_count < self.groups.len() - 2
             && count > self.groups[group_count].start_block
-            && count < self.groups[group_count + 1].start_block
+            && count < self.groups[group_count + 1].start_block)
         {
             group_count += 1;
         }
 
-        let relative_count = count - self.groups[group_count].to_relative_block(count);
+        let relative_count = self.groups[group_count].to_relative_block(count);
         self.groups[group_count].release_block(relative_count);
         self.sb.used_blocks -= 1;
         self.sb.real_used_blocks -= 1;

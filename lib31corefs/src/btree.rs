@@ -641,7 +641,7 @@ impl BtreeNode {
             BtreeType::Leaf => {
                 for entry in self.entries.iter_mut() {
                     if entry.rc == 0 {
-                        fs.release_block(entry.value);
+                        subvol.release_block(fs, device, entry.value)?;
                     } else {
                         entry.rc -= 1;
                     }

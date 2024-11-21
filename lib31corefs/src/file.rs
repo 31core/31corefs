@@ -42,7 +42,9 @@ impl File {
         D: Read + Write + Seek,
     {
         let btree_root = if inode.btree_root != 0 {
-            Some(BtreeNode::load_block(device, inode.btree_root)?)
+            let mut node = BtreeNode::load_block(device, inode.btree_root)?;
+            node.block_count = inode.btree_root;
+            Some(node)
         } else {
             None
         };
@@ -94,7 +96,9 @@ impl File {
         let inode = subvol.get_inode(device, inode_count)?;
 
         let btree_root = if inode.btree_root != 0 {
-            Some(BtreeNode::load_block(device, inode.btree_root)?)
+            let mut node = BtreeNode::load_block(device, inode.btree_root)?;
+            node.block_count = inode.btree_root;
+            Some(node)
         } else {
             None
         };
