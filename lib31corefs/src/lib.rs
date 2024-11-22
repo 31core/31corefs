@@ -15,10 +15,11 @@ pub use subvol::Subvolume;
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use block::*;
+use block::{Block, BlockGroup, SuperBlock};
 use path_util::{base_name, dir_path};
-use subvol::*;
+use subvol::{SubvolumeEntry, SubvolumeManager};
 
 pub const FS_MAGIC_HEADER: [u8; 4] = [0x31, 0xc0, 0x8e, 0xf5];
 pub const FS_VERSION: u8 = 1;
@@ -51,8 +52,8 @@ impl Filesystem {
 
         fs.sb.groups = fs.groups.len() as u64;
         fs.sb.subvol_mgr = SubvolumeManager::allocate_on_block(&mut fs, device)?;
-        fs.sb.creation_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        fs.sb.creation_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
 

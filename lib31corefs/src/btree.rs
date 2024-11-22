@@ -184,7 +184,7 @@ impl BtreeNode {
                 if i == 0 && id < self.entries[0].key {
                     self.entries.insert(0, BtreeEntry::new(id, ptr));
                     break;
-                } else if i < self.entries.len() - 1
+                } else if i + 1 < self.entries.len()
                     && id > self.entries[i].key
                     && id < self.entries[i + 1].key
                     || i == self.entries.len() - 1
@@ -294,7 +294,7 @@ impl BtreeNode {
             BtreeType::Internal => {
                 /* find child node to insert */
                 for i in 0..self.entries.len() {
-                    if i < self.entries.len() - 1
+                    if i + 1 < self.entries.len()
                         && offset > self.entries[i].key
                         && offset < self.entries[i + 1].key
                         || i == self.entries.len() - 1
@@ -363,7 +363,7 @@ impl BtreeNode {
             }
             BtreeType::Internal => {
                 for i in 0..self.entries.len() {
-                    if i < self.entries.len() - 1
+                    if i + 1 < self.entries.len()
                         && key >= self.entries[i].key
                         && key < self.entries[i + 1].key
                         || i == self.entries.len() - 1
@@ -422,7 +422,7 @@ impl BtreeNode {
         match self.r#type {
             BtreeType::Internal => {
                 for i in 0..self.entries.len() {
-                    if i < self.entries.len() - 1
+                    if i + 1 < self.entries.len()
                         && key >= self.entries[i].key
                         && key < self.entries[i + 1].key
                         || i == self.entries.len() - 1
@@ -532,7 +532,7 @@ impl BtreeNode {
         match self.r#type {
             BtreeType::Internal => {
                 for i in 0..self.entries.len() {
-                    if i < self.entries.len() - 1
+                    if i + 1 < self.entries.len()
                         && key >= self.entries[i].key
                         && key < self.entries[i + 1].key
                         || i == self.entries.len() - 1

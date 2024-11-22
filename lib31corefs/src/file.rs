@@ -192,17 +192,14 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        if self.btree_root.is_none() {
-            buffer[..size as usize].fill(0);
-        } else if let Some(btree_root) = &mut self.btree_root {
-            loop {
+        if let Some(btree_root) = &mut self.btree_root {
+            while size > 0 {
                 let block_count = offset / BLOCK_SIZE as u64; // the block count to be write
                 let block_offset = offset % BLOCK_SIZE as u64; // the relative offset to the block
 
                 let read_size;
                 if let Ok(entry) = btree_root.lookup(device, block_count) {
-                    let block = entry.value;
-                    let block = load_block(device, block)?;
+                    let block = load_block(device, entry.value)?;
                     read_size = std::cmp::min(size as usize, BLOCK_SIZE - block_offset as usize);
                     buffer[..read_size].copy_from_slice(
                         &block[block_offset as usize..block_offset as usize + read_size],
@@ -215,14 +212,12 @@ impl File {
                     buffer[..read_size].copy_from_slice(&[0].repeat(read_size));
                 }
 
-                if read_size < size as usize {
-                    offset += read_size as u64;
-                    size -= read_size as u64;
-                    buffer = &mut buffer[read_size..];
-                } else {
-                    break;
-                }
+                offset += read_size as u64;
+                size -= read_size as u64;
+                buffer = &mut buffer[read_size..];
             }
+        } else {
+            buffer[..size as usize].fill(0);
         }
 
         self.inode.update_atime();
@@ -245,23 +240,15 @@ impl File {
         if let Some(btree) = &mut self.btree_root {
             /* reduce file size */
             if size > 0 && size < self.inode.size {
-                let start_block = if size % BLOCK_SIZE as u64 == 0 {
-                    size / BLOCK_SIZE as u64 + 1
-                } else {
-                    size / BLOCK_SIZE as u64 + 2
-                };
-
-                let end_block = if self.inode.size % BLOCK_SIZE as u64 == 0 {
-                    self.inode.size / BLOCK_SIZE as u64
-                } else {
-                    self.inode.size / BLOCK_SIZE as u64 + 1
-                };
+                let start_block = size.div_ceil(BLOCK_SIZE as u64);
+                let end_block = self.inode.size / BLOCK_SIZE as u64;
 
                 for i in start_block..end_block {
                     if btree.lookup(device, i).is_ok() {
                         btree.remove(fs, subvol, device, i)?;
                     }
                 }
+                self.inode.btree_root = btree.block_count;
             } else if size == 0 {
                 btree.destroy(fs, subvol, device)?;
                 self.inode.btree_root = 0;
