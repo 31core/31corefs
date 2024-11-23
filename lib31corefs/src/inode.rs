@@ -93,6 +93,12 @@ impl INode {
     pub fn is_file(&self) -> bool {
         self.acl_type() == ACL_REGULAR_FILE
     }
+    pub fn is_char(&self) -> bool {
+        self.acl_type() == ACL_CHAR
+    }
+    pub fn is_block(&self) -> bool {
+        self.acl_type() == ACL_BLOCK
+    }
     pub fn is_empty_inode(&self) -> bool {
         self.acl == 0xffff
     }

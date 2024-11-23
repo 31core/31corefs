@@ -450,8 +450,11 @@ where
     D: Read + Write + Seek,
 {
     let inode = subvol.get_inode(device, inode_count)?;
-    let mut btree_root = BtreeNode::load_block(device, inode.btree_root)?;
-    btree_root.block_count = inode.btree_root;
-    btree_root.clone_tree(device)?;
+
+    if inode.btree_root != 0 {
+        let mut btree_root = BtreeNode::load_block(device, inode.btree_root)?;
+        btree_root.block_count = inode.btree_root;
+        btree_root.clone_tree(device)?;
+    }
     Ok(())
 }

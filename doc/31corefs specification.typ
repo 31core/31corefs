@@ -15,12 +15,14 @@
 #outline(depth: 1)
 
 = Introduction
-31corefs is a modern, cross-platform filesystem. It support advanced features like subvolume management, snapshot and CoW.
+31corefs is a modern, cross-platform filesystem. It supports advanced features like subvolume management, snapshot and CoW.
 
 Supported features:
-- Subvolume
-- Snapshot
 - Copy on Write
+- Sparse file
+- Subvolume and snapshot
+- POSIX ACLs
+- Case-sentitive
 
 = Definitions
 #table(columns: (auto, auto),
@@ -30,6 +32,7 @@ Supported features:
 = Super block
 The super block is the first block of the physical device, it records metadata describing the filesystem.
 
+*Definition*
 ```c
 struct super_block {
     uint8_t magic_header[4];
@@ -50,15 +53,16 @@ struct super_block {
 #table(
     columns: (auto, auto),
     [*Field*], [*Explanation*],
-    [magic_header], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`],
-    [version], [`0x01` for version 1],
-    [uuid], [Recommend to use UUIDv4],
-    [label], [A regular C string that ends with `NULL` character]
+    [magic_header], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`.],
+    [version], [`0x01` for version 1.],
+    [uuid], [Recommend to use UUIDv4.],
+    [label], [A regular C string that ends with `NULL` character which can be ASCII or UTF-8 charset.]
 )
 
 = Block group
 The whole filesystem is divided into several block groups, each block group is an independent block allocator. A block group includes a bitmap block and $8 times "BLOCK_SIZE"$ data blocks. The meta block is the first block of a block group, it records allocation status of the block groups. And the bitmap is the second block of a block group and it is uesd to tracking allocation of the data blocks.
 
+*Definition*
 ```c
 struct block_group_meta {
     uint64_t id;
@@ -93,6 +97,7 @@ struct btree_internal_entry {
 
 A leaf B-Tree node contains 170 leaf entries.
 
+*Definition*
 ```c
 struct btree_leaf_node {
     uint16_t entry_count;
@@ -130,6 +135,7 @@ Inode records the metadata of a file.
 
 Each inode takes 64 bytes, and its data structure is as follow.
 
+*Definition*
 ```c
 struct inode {
     uint16_t permission;
@@ -144,8 +150,7 @@ struct inode {
 };
 ```
 
-*Definitions:*
-
+*Field explanation*
 #table(
     columns: (auto, auto),
     [*Field*], [*Description*],
@@ -162,7 +167,7 @@ struct inode {
 
 *Empty inode*
 
-An an empty Inode always has `acl` valued `0xffff`.
+An empty Inode always has `acl` valued `0xffff`.
 
 *ACLs*
 
@@ -206,6 +211,7 @@ A subvolume contains an independent Inode allocation B-Tree, recording block cou
 == Subvolume entry
 A subvolume entry takes 128 bytes to describe a subvolume.
 
+*Definition*
 ```c
 struct subvolume_entry {
     uint64_t id;
@@ -266,12 +272,12 @@ struct igroup_bitmap {
 
 Subvolume mark an allocated block on the subvolume bitmap after allocated with the global allocator, and unmark an block when release it. This subvolume bitmap will be used when destroying a subvolume.
 
-== Linked content table
+= Linked content table
 *Definition*
 ```c
 struct linked_content_table {
     uint64_t next;
-    uint8_t data[BLOCK_SIZE - 8];
+    uint8_t content[BLOCK_SIZE - 8];
 };
 ```
-Linked content table is a typical linked table used to store simple content.
+Linked content table is a typical linked table used to store simple content, such as symbol link.

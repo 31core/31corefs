@@ -6,8 +6,9 @@
 
 * Copy on Write
 * Sparse file
-* Subvolume
-* Snapshot
+* Subvolume and snapshot
+* POSIX ACLs
+* Case-sentitive
 
 ## lib31corefs
 

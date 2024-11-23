@@ -674,6 +674,7 @@ impl BtreeNode {
             self.sync(device, self.block_count)?;
             self.block_count = subvol.new_block(fs, device)?;
             self.rc = 0;
+            self.sync(device, self.block_count)?;
 
             fs.sb.real_used_blocks += 1;
         }

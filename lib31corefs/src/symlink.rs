@@ -32,8 +32,8 @@ where
 
     loop {
         let mut lct = LinkedContentTable::default();
-        let size = std::cmp::min(point_to.len(), lct.data.len());
-        lct.data[..size].copy_from_slice(point_to[..size].as_bytes());
+        let size = std::cmp::min(point_to.len(), lct.content.len());
+        lct.content[..size].copy_from_slice(point_to[..size].as_bytes());
         point_to = &point_to[size..];
 
         if point_to.is_empty() {
@@ -87,7 +87,7 @@ where
     'main: loop {
         let lct = LinkedContentTable::load_block(device, content_ptr)?;
 
-        for byte in lct.data {
+        for byte in lct.content {
             if byte == 0 {
                 break 'main;
             } else {
