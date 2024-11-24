@@ -34,27 +34,33 @@ fn main() -> std::io::Result<()> {
         Commands::Snap { id } => {
             let snap_id = fs.create_snapshot(&mut device, id)?;
             println!("Created snapshot '{}' of subvolume '{}'.", snap_id, id);
+            fs.sync_meta_data(&mut device)?;
         }
         Commands::Create => {
             let id = fs.new_subvolume(&mut device)?;
             println!("Created subvolume '{}'.", id);
+            fs.sync_meta_data(&mut device)?;
         }
         Commands::Remove { id } => {
             fs.remove_subvolume(&mut device, id)?;
             println!("Removed submovume '{}'.", id);
+            fs.sync_meta_data(&mut device)?;
         }
         Commands::List => {
             let list = fs.list_subvolumes(&mut device)?;
 
+            println!("+{}+{}+", "-".repeat(5), "-".repeat(20));
             println!("|{:5}|{:20}|", "ID", "Creation Date");
+            println!("+{}+{}+", "-".repeat(5), "-".repeat(20));
             for entry in list {
                 println!(
-                    "|{:5}|{:20}|",
+                    "|{:<5}|{:20}|",
                     entry.id,
                     chrono::DateTime::from_timestamp(entry.creation_date as i64, 0)
                         .unwrap()
                         .format("%Y-%m-%d %H-%M-%S")
                 );
+                println!("+{}+{}+", "-".repeat(5), "-".repeat(20));
             }
         }
     }
