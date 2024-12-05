@@ -65,7 +65,14 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        let sb = SuperBlock::load(block::load_block(device, 0)?);
+        let sb_block = block::load_block(device, 0)?;
+        if !SuperBlock::is_valid(&sb_block) {
+            return Err(Error::new(
+                ErrorKind::InvalidData,
+                "Invalid fs type or incorrect version.",
+            ));
+        }
+        let sb = SuperBlock::load(sb_block);
 
         let mut groups = Vec::new();
 

@@ -1,4 +1,4 @@
-use crate::inode::*;
+use crate::inode::{INode, INODE_PER_GROUP, INODE_SIZE};
 use crate::subvol::Subvolume;
 use crate::Filesystem;
 
@@ -133,7 +133,7 @@ impl Default for SuperBlock {
         Self {
             groups: 0,
             uuid: [0; 16],
-            label: [0; 256],
+            label: [0; LABEL_MAX_LEN],
             total_blocks: 0,
             used_blocks: 0,
             real_used_blocks: 0,
@@ -185,16 +185,27 @@ impl SuperBlock {
     }
     /** Get filesystem label */
     pub fn get_label(&self) -> String {
-        let mut label = String::new();
+        let mut null_idx = self.label.len();
 
-        for ch in self.label {
-            if ch == 0 {
+        for (i, byte) in self.label.iter().enumerate() {
+            if *byte == 0 {
+                null_idx = i;
                 break;
             }
-            label.push(ch as char);
         }
 
-        label
+        String::from_utf8_lossy(&self.label[..null_idx]).to_string()
+    }
+    pub(crate) fn is_valid(bytes: &[u8]) -> bool {
+        /* check magic header */
+        for (i, byte) in crate::FS_MAGIC_HEADER.iter().enumerate() {
+            if *byte != bytes[i] {
+                return false;
+            }
+        }
+
+        /* check fs version */
+        bytes[4] == crate::FS_VERSION
     }
 }
 

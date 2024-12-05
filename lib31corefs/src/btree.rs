@@ -238,6 +238,7 @@ impl BtreeNode {
     where
         D: Write + Read + Seek,
     {
+        self.cow_clone_node(fs, subvol, device)?;
         if let Some((id, block)) = self.insert_internal(fs, subvol, device, offset, block)? {
             let mut left = Self {
                 r#type: self.r#type,
