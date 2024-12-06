@@ -1,8 +1,8 @@
 use crate::block::LinkedContentTable;
 use crate::dir::Directory;
 use crate::inode::{INode, ACL_SYMBOLLINK, PERMISSION_BITS};
-use crate::path_util::{base_name, dir_path};
 use crate::subvol::Subvolume;
+use crate::utils::{base_name, dir_path};
 use crate::{Block, Filesystem};
 
 use std::io::Result as IOResult;

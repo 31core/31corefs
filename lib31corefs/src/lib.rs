@@ -4,9 +4,9 @@ pub mod inode;
 mod btree;
 mod dir;
 mod file;
-mod path_util;
 mod subvol;
 mod symlink;
+mod utils;
 
 pub use dir::Directory;
 pub use file::File;
@@ -15,11 +15,10 @@ pub use subvol::Subvolume;
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use block::{Block, BlockGroup, SuperBlock};
-use path_util::{base_name, dir_path};
-use subvol::{SubvolumeEntry, SubvolumeManager};
+use subvol::{SubvolumeEntry, SubvolumeManager, SUBVOLUME_STATE_ALLOCATED};
+use utils::{base_name, dir_path, get_sys_time};
 
 pub const FS_MAGIC_HEADER: [u8; 4] = [0x31, 0xc0, 0x8e, 0xf5];
 pub const FS_VERSION: u8 = 1;
@@ -52,10 +51,7 @@ impl Filesystem {
 
         fs.sb.groups = fs.groups.len() as u64;
         fs.sb.subvol_mgr = SubvolumeManager::allocate_on_block(&mut fs, device)?;
-        fs.sb.creation_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        fs.sb.creation_time = get_sys_time();
 
         fs.sb.default_subvol = fs.new_subvolume(device)?;
 
@@ -137,21 +133,27 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        let subvol_mgr = self.sb.subvol_mgr;
-        SubvolumeManager::new_subvolume(self, device, subvol_mgr)
+        SubvolumeManager::new_subvolume(self, device)
     }
     pub fn remove_subvolume<D>(&mut self, device: &mut D, id: u64) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        let subvol_mgr = self.sb.subvol_mgr;
-        SubvolumeManager::remove_subvolume(self, device, subvol_mgr, id)
+        SubvolumeManager::remove_subvolume(self, device, id)
     }
     pub fn get_subvolume<D>(&self, device: &mut D, id: u64) -> IOResult<Subvolume>
     where
         D: Read + Write + Seek,
     {
-        SubvolumeManager::get_subvolume(device, self.sb.subvol_mgr, id)
+        let subvol = SubvolumeManager::get_subvolume(device, self.sb.subvol_mgr, id)?;
+        if subvol.entry.state != SUBVOLUME_STATE_ALLOCATED {
+            Err(Error::new(
+                ErrorKind::NotFound,
+                format!("No such subvolume '{id}'"),
+            ))
+        } else {
+            Ok(subvol)
+        }
     }
     pub fn get_default_subvolume<D>(&self, device: &mut D) -> IOResult<Subvolume>
     where
@@ -164,7 +166,7 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        SubvolumeManager::create_snapshot(self, device, self.sb.subvol_mgr, id)
+        SubvolumeManager::create_snapshot(self, device, id)
     }
     /** List submolumes */
     pub fn list_subvolumes<D>(&mut self, device: &mut D) -> IOResult<Vec<SubvolumeEntry>>

@@ -2,9 +2,9 @@ use crate::block::{load_block, save_block, Block, INodeGroup, BLOCK_SIZE};
 use crate::btree::{BtreeNode, BtreeType};
 use crate::dir::Directory;
 use crate::inode::{INode, ACL_REGULAR_FILE, INODE_PER_GROUP, PERMISSION_BITS};
-use crate::path_util::{base_name, dir_path};
 use crate::subvol::Subvolume;
 use crate::symlink::read_link_from_inode;
+use crate::utils::{base_name, dir_path};
 use crate::Filesystem;
 
 use std::io::{Error, ErrorKind, Result as IOResult};
@@ -85,7 +85,7 @@ impl File {
         }
     }
     /** Open a file by inode count */
-    pub(crate) fn open_by_inode<D>(
+    pub fn open_by_inode<D>(
         subvol: &mut Subvolume,
         device: &mut D,
         inode_count: u64,

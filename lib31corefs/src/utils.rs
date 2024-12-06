@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[inline]
 pub fn base_name(path: &Path) -> &str {
@@ -8,4 +9,12 @@ pub fn base_name(path: &Path) -> &str {
 #[inline]
 pub fn dir_path(path: &Path) -> &Path {
     path.parent().unwrap()
+}
+
+#[inline]
+pub fn get_sys_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
 }

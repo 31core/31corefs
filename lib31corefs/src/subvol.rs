@@ -1,17 +1,17 @@
 use std::io::{Error, ErrorKind, Result as IOResult};
 use std::io::{Read, Seek, Write};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::block::{BitmapBlock, BitmapIndexBlock, Block, INodeGroup, BLOCK_SIZE};
 use crate::btree::BtreeNode;
 use crate::inode::{INode, INODE_PER_GROUP};
+use crate::utils::get_sys_time;
 use crate::Filesystem;
 
 const SUBVOLUMES: usize = BLOCK_SIZE / SUBVOLUME_ENTRY_SIZE - 1;
 const SUBVOLUME_ENTRY_SIZE: usize = 128;
 
-const SUBVOLUME_STATE_ALLOCATED: u8 = 1;
-const SUBVOLUME_STATE_REMOVED: u8 = 2;
+pub const SUBVOLUME_STATE_ALLOCATED: u8 = 1;
+pub const SUBVOLUME_STATE_REMOVED: u8 = 2;
 
 fn new_bitmap<D>(fs: &mut Filesystem, device: &mut D, count: usize) -> IOResult<u64>
 where
@@ -48,7 +48,7 @@ where
         for (bitmap_index, bitmap) in index_block.bitmaps.iter().enumerate() {
             let bitmap = BitmapBlock::load_block(device, *bitmap)?;
             let mut total_bitmap =
-                BitmapBlock::load_block(device, total_index_block.bitmaps[bitmap_index])?;
+                BitmapBlock::load_block(device, total_index_block.bitmaps[bitmap_index]).unwrap();
             for byte in 0..BLOCK_SIZE {
                 total_bitmap.bytes[byte] |= bitmap.bytes[byte];
             }
@@ -63,6 +63,32 @@ where
 
     Ok(())
 }
+
+fn clean_bitmap<D>(device: &mut D, bitmap: u64) -> IOResult<()>
+where
+    D: Write + Read + Seek,
+{
+    let mut index_block = BitmapIndexBlock::load_block(device, bitmap)?;
+    loop {
+        for (bitmap_index, bitmap) in index_block.bitmaps.iter().enumerate() {
+            let mut bitmap = BitmapBlock::load_block(device, *bitmap)?;
+            for byte in 0..BLOCK_SIZE {
+                bitmap.bytes[byte] = 0;
+            }
+            bitmap.sync(device, index_block.bitmaps[bitmap_index])?;
+        }
+        if index_block.next != 0 {
+            index_block = BitmapIndexBlock::load_block(device, index_block.next)?;
+        } else {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+const SUBVOL_TYPE_NORMAL: u8 = 1;
+const SUBVOL_TYPE_SNAP: u8 = 2;
 
 #[derive(Default, Debug, Clone, Copy)]
 /**
@@ -96,6 +122,7 @@ pub struct SubvolumeEntry {
     pub snaps: u64,
     pub parent_subvol: u64,
     pub state: u8,
+    pub subvol_type: u8,
 }
 
 impl SubvolumeEntry {
@@ -113,6 +140,7 @@ impl SubvolumeEntry {
             snaps: u64::from_be_bytes(bytes[72..80].try_into().unwrap()),
             parent_subvol: u64::from_be_bytes(bytes[80..88].try_into().unwrap()),
             state: bytes[88],
+            subvol_type: bytes[89],
         }
     }
     pub fn dump(&self) -> [u8; SUBVOLUME_ENTRY_SIZE] {
@@ -130,6 +158,7 @@ impl SubvolumeEntry {
         bytes[72..80].copy_from_slice(&self.snaps.to_be_bytes());
         bytes[80..88].copy_from_slice(&self.parent_subvol.to_be_bytes());
         bytes[88] = self.state;
+        bytes[89] = self.subvol_type;
 
         bytes
     }
@@ -139,11 +168,11 @@ impl SubvolumeEntry {
 /**
  * # Data structure
  *
- * |Start|End|Description|
- * |-----|---|-----------|
- * |0    |8  |Next pointer|
- * |8    |16 |Count of entries|
- * |64   |4096|Entries   |
+ * |Start|End |Description|
+ * |-----|----|-----------|
+ * |0    |8   |Next pointer|
+ * |8    |16  |Count of entries|
+ * |128  |4096|Entries   |
 */
 pub struct SubvolumeManager {
     pub next: u64,
@@ -188,15 +217,19 @@ impl SubvolumeManager {
     where
         D: Write + Read + Seek,
     {
+        let mut max_id = 0; // the maxium entry ID in previous block
         loop {
             let mgr = Self::load_block(device, mgr_block_count)?;
 
             if mgr.next == 0 {
                 return match mgr.entries.last() {
                     Some(subvol) => Ok(subvol.id + 1),
-                    None => Ok(0),
+                    None => Ok(max_id + 1),
                 };
             } else {
+                if let Some(entry) = mgr.entries.last() {
+                    max_id = entry.id;
+                }
                 mgr_block_count = mgr.next;
             }
         }
@@ -276,57 +309,49 @@ impl SubvolumeManager {
         }
     }
     /** Create a new subvolume */
-    pub fn new_subvolume<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        mut mgr_block_count: u64,
-    ) -> IOResult<u64>
+    pub fn new_subvolume<D>(fs: &mut Filesystem, device: &mut D) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
+        let mut mgr_block_count = fs.sb.subvol_mgr;
         loop {
             let mut mgr = Self::load_block(device, mgr_block_count)?;
             if mgr.next == 0 {
                 if mgr.entries.len() < SUBVOLUMES {
                     let entry = SubvolumeEntry {
-                        id: Self::generate_new_id(device, mgr_block_count)?,
+                        id: Self::generate_new_id(device, fs.sb.subvol_mgr)?,
                         inode_tree_root: BtreeNode::allocate_on_block(fs, device)?,
                         igroup_bitmap: IGroupBitmap::allocate_on_block(fs, device)?,
                         bitmap: new_bitmap(fs, device, fs.groups.len())?,
-                        creation_date: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap()
-                            .as_secs(),
+                        creation_date: get_sys_time(),
                         state: SUBVOLUME_STATE_ALLOCATED,
+                        subvol_type: SUBVOL_TYPE_NORMAL,
                         ..Default::default()
                     };
                     let subvol_id = entry.id;
                     mgr.entries.push(entry);
                     mgr.sync(device, mgr_block_count)?;
 
-                    let mut subvol = Self::get_subvolume(device, mgr_block_count, subvol_id)?;
+                    let mut subvol = Self::get_subvolume(device, fs.sb.subvol_mgr, subvol_id)?;
                     crate::dir::create(fs, &mut subvol, device)?;
                     return Ok(subvol_id);
                 } else {
-                    let new_mgr_id = fs.new_block()?;
+                    let new_mgr_id = SubvolumeManager::allocate_on_block(fs, device)?;
                     mgr.next = new_mgr_id;
                     mgr.sync(device, mgr_block_count)?;
                     mgr_block_count = new_mgr_id;
                 }
+            } else {
+                mgr_block_count = mgr.next;
             }
         }
     }
     /** Remove a subvolume */
-    pub fn remove_subvolume<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        orig_mgr_block_count: u64,
-        id: u64,
-    ) -> IOResult<()>
+    pub fn remove_subvolume<D>(fs: &mut Filesystem, device: &mut D, id: u64) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
-        let mut mgr_block_count = orig_mgr_block_count;
+        let mut mgr_block_count = fs.sb.subvol_mgr;
         loop {
             let mut mgr = Self::load_block(device, mgr_block_count)?;
 
@@ -334,13 +359,13 @@ impl SubvolumeManager {
                 if subvol.id == id {
                     IGroupBitmap::destroy_blocks(fs, device, subvol.igroup_bitmap)?;
 
-                    let mut bitmap_index = 0;
-                    let mut index_block = BitmapIndexBlock::load_block(device, subvol.bitmap)?;
-
                     if subvol.snaps == 0 && subvol.state == SUBVOLUME_STATE_REMOVED {
                         subvol.bitmap = subvol.shared_bitmap;
                     }
 
+                    let mut index_block = BitmapIndexBlock::load_block(device, subvol.bitmap)?;
+
+                    let mut bitmap_index = 0;
                     /* unmark blocks from global bitmap */
                     for group in 0..fs.groups.len() {
                         let bitmap = BitmapBlock::load_block(
@@ -356,20 +381,31 @@ impl SubvolumeManager {
                         }
                     }
 
-                    fs.sb.used_blocks -= subvol.used_blocks;
-                    fs.sb.real_used_blocks -= subvol.real_used_blocks;
+                    if subvol.state != SUBVOLUME_STATE_REMOVED {
+                        fs.sb.used_blocks -= subvol.used_blocks;
+                    }
 
-                    if subvol.parent_subvol != 0 {
-                        Self::remove_subvolume(
-                            fs,
+                    if subvol.subvol_type == SUBVOL_TYPE_SNAP {
+                        let mut parent =
+                            Self::get_subvolume(device, fs.sb.subvol_mgr, subvol.parent_subvol)?;
+                        parent.entry.snaps -= 1;
+                        Self::set_subvolume(
                             device,
-                            orig_mgr_block_count,
+                            fs.sb.subvol_mgr,
                             subvol.parent_subvol,
+                            parent.entry,
                         )?;
+                        if parent.entry.snaps == 0 && parent.entry.state == SUBVOLUME_STATE_REMOVED
+                        {
+                            SubvolumeManager::remove_subvolume(fs, device, parent.entry.id)?;
+                        }
                     }
                     if subvol.snaps > 0 {
                         subvol.state = SUBVOLUME_STATE_REMOVED;
                     } else {
+                        if subvol.state != SUBVOLUME_STATE_REMOVED {
+                            fs.sb.real_used_blocks -= subvol.real_used_blocks;
+                        }
                         mgr.entries.remove(i);
                     }
 
@@ -389,42 +425,40 @@ impl SubvolumeManager {
         }
     }
     /** Create a snapshot */
-    pub fn create_snapshot<D>(
-        fs: &mut Filesystem,
-        device: &mut D,
-        mgr_block_count: u64,
-        id: u64,
-    ) -> IOResult<u64>
+    pub fn create_snapshot<D>(fs: &mut Filesystem, device: &mut D, id: u64) -> IOResult<u64>
     where
         D: Read + Write + Seek,
     {
-        let subvol_id = Self::new_subvolume(fs, device, mgr_block_count)?;
-        let mut subvol = Self::get_subvolume(device, mgr_block_count, id)?;
+        let snap_id = Self::new_subvolume(fs, device)?;
+        let mut snap = Self::get_subvolume(device, fs.sb.subvol_mgr, id)?;
+        let mut origin_subvol = Self::get_subvolume(device, fs.sb.subvol_mgr, id)?;
 
-        subvol.entry.id = subvol_id;
-        subvol.entry.creation_date = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        subvol.entry.parent_subvol = id;
-        Self::set_subvolume(device, mgr_block_count, subvol_id, subvol.entry)?;
+        snap.entry.id = snap_id;
+        snap.entry.shared_bitmap = new_bitmap(fs, device, fs.groups.len())?;
+        snap.entry.creation_date = get_sys_time();
+        snap.entry.parent_subvol = id;
+        snap.entry.subvol_type = SUBVOL_TYPE_SNAP;
+        snap.entry.used_blocks = origin_subvol.entry.used_blocks;
+        Self::set_subvolume(device, fs.sb.subvol_mgr, snap_id, snap.entry)?;
 
-        let mut origin_subvol = Self::get_subvolume(device, mgr_block_count, id)?;
         origin_subvol.entry.snaps += 1;
-        origin_subvol.entry.shared_bitmap = origin_subvol.entry.bitmap;
-        origin_subvol.entry.bitmap = new_bitmap(fs, device, fs.groups.len())?;
-        if origin_subvol.entry.shared_bitmap != 0 {
-            merge_to_shared_bitmap(
-                device,
-                origin_subvol.entry.bitmap,
-                origin_subvol.entry.shared_bitmap,
-            )?;
+        /* allocate shared bitmap if empty */
+        if origin_subvol.entry.shared_bitmap == 0 {
+            origin_subvol.entry.shared_bitmap = new_bitmap(fs, device, fs.groups.len())?;
         }
-        Self::set_subvolume(device, mgr_block_count, id, origin_subvol.entry)?;
+        merge_to_shared_bitmap(
+            device,
+            origin_subvol.entry.bitmap,
+            origin_subvol.entry.shared_bitmap,
+        )?;
+        clean_bitmap(device, origin_subvol.entry.bitmap)?;
+        Self::set_subvolume(device, fs.sb.subvol_mgr, id, origin_subvol.entry)?;
 
-        subvol.igroup_mgt_btree.clone_tree(device)?; // clone inode tree
-        IGroupBitmap::clone_blocks(device, subvol.entry.igroup_bitmap)?;
-        Ok(subvol_id)
+        origin_subvol.igroup_mgt_btree.clone_tree(device)?; // clone inode tree
+        IGroupBitmap::clone_blocks(device, origin_subvol.entry.igroup_bitmap)?;
+
+        fs.sb.used_blocks += origin_subvol.entry.used_blocks;
+        Ok(snap_id)
     }
     /** List submolumes */
     pub fn list_subvols<D>(
@@ -529,12 +563,12 @@ impl IGroupBitmap {
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        mut allocator_count: u64,
         count: u64,
     ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
+        let mut allocator_count = subvol.entry.igroup_bitmap;
         let mut byte = count as usize / 8;
         let bit = count as usize % 8;
 
@@ -578,12 +612,12 @@ impl IGroupBitmap {
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        mut allocator_count: u64,
         count: u64,
     ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
+        let mut allocator_count = subvol.entry.igroup_bitmap;
         let mut byte = count as usize / 8;
         let bit = count as usize % 8;
 
@@ -734,13 +768,7 @@ impl Subvolume {
 
             SubvolumeManager::set_subvolume(device, fs.sb.subvol_mgr, self.entry.id, self.entry)?;
 
-            IGroupBitmap::set_available(
-                fs,
-                self,
-                device,
-                self.entry.igroup_bitmap,
-                inode_group_count,
-            )?;
+            IGroupBitmap::set_available(fs, self, device, inode_group_count)?;
 
             Ok(inode_group_count * INODE_PER_GROUP as u64)
         }
@@ -779,13 +807,7 @@ impl Subvolume {
         inode_group.inodes[igroup_offset] = inode;
 
         if inode_group.is_full() {
-            IGroupBitmap::set_unavailable(
-                fs,
-                self,
-                device,
-                self.entry.igroup_bitmap,
-                igroup_count,
-            )?;
+            IGroupBitmap::set_unavailable(fs, self, device, igroup_count)?;
         }
 
         if btree_query_result.rc > 0 {
@@ -834,13 +856,7 @@ impl Subvolume {
 
         /* release inode group */
         if inode_group.is_empty() {
-            IGroupBitmap::set_unavailable(
-                fs,
-                self,
-                device,
-                self.entry.igroup_bitmap,
-                inode_group_block,
-            )?;
+            IGroupBitmap::set_unavailable(fs, self, device, inode_group_block)?;
             self.igroup_mgt_btree
                 .remove(fs, &mut self.clone(), device, inode_group_count)?;
             fs.release_block(inode_group_block);
@@ -882,12 +898,7 @@ impl Subvolume {
         Ok(count_orig)
     }
     /** Release a data block from shared_bitmap */
-    pub fn release_shared_block<D>(
-        &mut self,
-        fs: &mut Filesystem,
-        device: &mut D,
-        mut count: u64,
-    ) -> IOResult<()>
+    fn release_shared_block<D>(&mut self, device: &mut D, mut count: u64) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
@@ -901,10 +912,10 @@ impl Subvolume {
                 if bitmap.get_used(count % (8 * BLOCK_SIZE as u64)) {
                     bitmap.set_unused(count % (8 * BLOCK_SIZE as u64));
                     bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
+                    self.entry.real_used_blocks -= 1;
                 } else {
                     SubvolumeManager::get_subvolume(device, 0, self.entry.parent_subvol)?
-                        .release_block(fs, device, count)?;
-                    return Ok(());
+                        .release_shared_block(device, count)?;
                 }
 
                 break;
@@ -919,9 +930,6 @@ impl Subvolume {
             }
         }
 
-        fs.release_block(count);
-        self.entry.used_blocks -= 1;
-        self.entry.real_used_blocks -= 1;
         Ok(())
     }
     /** Release a data block */
@@ -944,10 +952,12 @@ impl Subvolume {
                 if bitmap.get_used(count % (8 * BLOCK_SIZE as u64)) {
                     bitmap.set_unused(count % (8 * BLOCK_SIZE as u64));
                     bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
+
+                    self.entry.real_used_blocks -= 1;
                 } else {
-                    self.release_shared_block(fs, device, count)?;
-                    return Ok(());
+                    self.release_shared_block(device, count)?;
                 }
+                self.entry.used_blocks -= 1;
 
                 break;
             } else if index.next != 0 {
@@ -962,8 +972,15 @@ impl Subvolume {
         }
 
         fs.release_block(count);
-        self.entry.used_blocks -= 1;
-        self.entry.real_used_blocks -= 1;
+        Ok(())
+    }
+    /** Synchronize subvolume entry to disk */
+    pub fn sync_meta_data<D>(&mut self, fs: &mut Filesystem, device: &mut D) -> IOResult<()>
+    where
+        D: Read + Write + Seek,
+    {
+        SubvolumeManager::set_subvolume(device, fs.sb.subvol_mgr, self.entry.id, self.entry)?;
+
         Ok(())
     }
 }

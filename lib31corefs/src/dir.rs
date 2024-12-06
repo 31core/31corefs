@@ -1,8 +1,8 @@
 use crate::file::File;
 use crate::inode::{INode, ACL_DIRECTORY, PERMISSION_BITS};
-use crate::path_util::{base_name, dir_path};
 use crate::subvol::Subvolume;
 use crate::symlink::read_link_from_inode;
+use crate::utils::{base_name, dir_path};
 use crate::Filesystem;
 
 use std::collections::HashMap;
