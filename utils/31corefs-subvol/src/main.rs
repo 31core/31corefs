@@ -20,6 +20,8 @@ enum Commands {
     Snap { id: u64 },
     /// Remove a subvolume
     Remove { id: u64 },
+    /// Set default subvolume
+    SetDefault { id: u64 },
 }
 
 fn to_size_str(size: usize) -> String {
@@ -67,20 +69,33 @@ fn main() -> std::io::Result<()> {
         Commands::List => {
             let list = fs.list_subvolumes(&mut device)?;
 
-            println!("+{}+{}+{}+", "-".repeat(5), "-".repeat(20), "-".repeat(8));
-            println!("|{:5}|{:20}|{:8}|", "ID", "Creation Date", "Size");
-            println!("+{}+{}+{}+", "-".repeat(5), "-".repeat(20), "-".repeat(8));
+            println!("+{}+{}+{}+", "-".repeat(7), "-".repeat(20), "-".repeat(8));
+            println!("|{:7}|{:20}|{:8}|", "ID", "Creation Date", "Size");
+            println!("+{}+{}+{}+", "-".repeat(7), "-".repeat(20), "-".repeat(8));
+
             for entry in list {
+                let id_str = if fs.sb.default_subvol == entry.id {
+                    format!("{} *", entry.id)
+                } else {
+                    format!("{}", entry.id)
+                };
                 println!(
-                    "|{:<5}|{:20}|{:8}|",
-                    entry.id,
+                    "|{:7}|{:20}|{:8}|",
+                    id_str,
                     chrono::DateTime::from_timestamp(entry.creation_date as i64, 0)
                         .unwrap()
                         .format("%Y-%m-%d %H:%M:%S"),
                     to_size_str(entry.real_used_blocks as usize * BLOCK_SIZE),
                 );
-                println!("+{}+{}+{}+", "-".repeat(5), "-".repeat(20), "-".repeat(8));
+                println!("+{}+{}+{}+", "-".repeat(7), "-".repeat(20), "-".repeat(8));
             }
+        }
+        Commands::SetDefault { id } => {
+            if fs.get_subvolume(&mut device, id).is_err() {
+                panic!("No such subvolume {}", id);
+            }
+            fs.sb.default_subvol = id;
+            fs.sync_meta_data(&mut device)?;
         }
     }
 

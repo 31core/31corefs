@@ -139,7 +139,14 @@ impl Filesystem {
     where
         D: Read + Write + Seek,
     {
-        SubvolumeManager::remove_subvolume(self, device, id)
+        if id == self.sb.default_subvol {
+            Err(Error::new(
+                ErrorKind::Unsupported,
+                "Removing default subvolume is not supported.",
+            ))
+        } else {
+            SubvolumeManager::remove_subvolume(self, device, id)
+        }
     }
     pub fn get_subvolume<D>(&self, device: &mut D, id: u64) -> IOResult<Subvolume>
     where

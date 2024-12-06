@@ -217,18 +217,18 @@ impl SubvolumeManager {
     where
         D: Write + Read + Seek,
     {
-        let mut max_id = 0; // the maxium entry ID in previous block
+        let mut max_id = 0; // the maxium entry ID + 1 in previous block
         loop {
             let mgr = Self::load_block(device, mgr_block_count)?;
 
             if mgr.next == 0 {
                 return match mgr.entries.last() {
                     Some(subvol) => Ok(subvol.id + 1),
-                    None => Ok(max_id + 1),
+                    None => Ok(max_id),
                 };
             } else {
                 if let Some(entry) = mgr.entries.last() {
-                    max_id = entry.id;
+                    max_id = entry.id + 1;
                 }
                 mgr_block_count = mgr.next;
             }
