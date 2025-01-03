@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use crate::{block::BLOCK_SIZE, utils::get_sys_time};
 
 pub const INODE_SIZE: usize = 64;
@@ -110,9 +108,6 @@ impl INode {
     }
     pub fn update_mtime(&mut self) {
         self.update_ctime();
-        self.mtime = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        self.mtime = get_sys_time();
     }
 }

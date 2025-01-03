@@ -72,7 +72,7 @@ struct block_group_meta {
 ```
 
 = B-Tree
-== B-Tree entry 
+== B-Tree entry
 
 31corefs defines a generic B-Tree that is used to mapping a unique 64 bit unsigned integer to another, with CoW support, which is uesd in data block management and inode group management.
 
@@ -157,9 +157,9 @@ struct inode {
     [acl], [POSIX ACL],
     [uid], [UID of owner],
     [gid], [GID of owner],
-    [atime], [Last access time (unit: sec)],
-    [ctime], [Last change time (unit: sec)],
-    [mtime], [Last modify time (unit: sec)],
+    [atime], [Last access time (unit: nano sec)],
+    [ctime], [Last change time (unit: nano sec)],
+    [mtime], [Last modify time (unit: nano sec)],
     [hlinks], [Count of hard links],
     [size], [File size],
     [btree_root], [Root B-Tree node block of content management]

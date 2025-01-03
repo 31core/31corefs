@@ -1,5 +1,7 @@
-use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::{
+    path::Path,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[inline]
 pub fn base_name(path: &Path) -> &str {
@@ -16,5 +18,5 @@ pub fn get_sys_time() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs()
+        .as_nanos() as u64
 }
