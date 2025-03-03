@@ -1,6 +1,7 @@
 #set page(numbering: "1")
 #set par(justify: true)
 #set table(stroke: 0.5pt)
+#set heading(numbering: "1.")
 
 #align(center)[#text(17pt)[*31corefs specification*]]
 
@@ -9,8 +10,6 @@
   Email: #link("mailto:31core@tutanota.com") \
   Version: 1.0-dev
 ]
-
-#set heading(numbering: "1.")
 
 #outline(depth: 1)
 
@@ -226,6 +225,7 @@ struct subvolume_entry {
     uint64_t snaps;
     uint64_t parent_subvol;
     uint8_t state;
+    uint8_t flags;
 };
 ```
 
@@ -233,6 +233,11 @@ Subvolume statement used by `state` field:
 #table(columns: 2,
     [SUBVOLUME_STATE_ALLOCATED], [`0x01`],
     [SUBVOLUME_STATE_REMOVED], [`0x02`]
+)
+
+Subvolume statement used by `flags` field:
+#table(columns: 2,
+    [SUBVOLUME_FLAG_READONLY], [`0x01`],
 )
 
 == Subvolume manager

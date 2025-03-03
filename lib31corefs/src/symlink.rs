@@ -1,13 +1,16 @@
-use crate::block::LinkedContentTable;
-use crate::dir::Directory;
-use crate::inode::{INode, ACL_SYMBOLLINK, PERMISSION_BITS};
-use crate::subvol::Subvolume;
-use crate::utils::{base_name, dir_path};
-use crate::{Block, Filesystem};
-
-use std::io::Result as IOResult;
-use std::io::{Read, Seek, Write};
-use std::path::{Path, PathBuf};
+use crate::{
+    block::LinkedContentTable,
+    dir::Directory,
+    inode::{ACL_SYMBOLLINK, INode, PERMISSION_BITS},
+    subvol::Subvolume,
+    utils::{base_name, dir_path},
+    {Block, Filesystem},
+};
+use std::{
+    io::Result as IOResult,
+    io::{Read, Seek, Write},
+    path::{Path, PathBuf},
+};
 
 /** Create a symbol link */
 pub fn create<D, P>(

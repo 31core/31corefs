@@ -1,15 +1,18 @@
-use crate::block::{load_block, save_block, Block, INodeGroup, BLOCK_SIZE};
-use crate::btree::{BtreeNode, BtreeType};
-use crate::dir::Directory;
-use crate::inode::{INode, ACL_REGULAR_FILE, INODE_PER_GROUP, PERMISSION_BITS};
-use crate::subvol::Subvolume;
-use crate::symlink::read_link_from_inode;
-use crate::utils::{base_name, dir_path};
-use crate::Filesystem;
-
-use std::io::{Error, ErrorKind, Result as IOResult};
-use std::io::{Read, Seek, Write};
-use std::path::Path;
+use crate::{
+    Filesystem,
+    block::{BLOCK_SIZE, Block, INodeGroup, load_block, save_block},
+    btree::{BtreeNode, BtreeType},
+    dir::Directory,
+    inode::{ACL_REGULAR_FILE, INODE_PER_GROUP, INode, PERMISSION_BITS},
+    subvol::Subvolume,
+    symlink::read_link_from_inode,
+    utils::{base_name, dir_path},
+};
+use std::{
+    io::{Error, ErrorKind, Result as IOResult},
+    io::{Read, Seek, Write},
+    path::Path,
+};
 
 #[derive(Debug)]
 pub struct File {

@@ -1,9 +1,12 @@
-use crate::block::{Block, BLOCK_SIZE};
-use crate::subvol::Subvolume;
-use crate::Filesystem;
-
-use std::io::{Error, ErrorKind, Result as IOResult};
-use std::io::{Read, Seek, Write};
+use crate::{
+    Filesystem,
+    block::{BLOCK_SIZE, Block},
+    subvol::Subvolume,
+};
+use std::{
+    io::{Error, ErrorKind, Result as IOResult},
+    io::{Read, Seek, Write},
+};
 
 const MAX_INTERNAL_COUNT: usize = (BLOCK_SIZE - ENTRY_START) / ENTRY_INTERNAL_SIZE;
 const MAX_LEAF_COUNT: usize = (BLOCK_SIZE - ENTRY_START) / ENTRY_LEAF_SIZE;

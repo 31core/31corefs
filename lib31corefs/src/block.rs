@@ -1,10 +1,13 @@
-use crate::inode::{INode, INODE_PER_GROUP, INODE_SIZE};
-use crate::subvol::Subvolume;
-use crate::Filesystem;
-
-use std::fmt::Debug;
-use std::io::Result as IOResult;
-use std::io::{Read, Seek, SeekFrom, Write};
+use crate::{
+    Filesystem,
+    inode::{INODE_PER_GROUP, INODE_SIZE, INode},
+    subvol::Subvolume,
+};
+use std::{
+    fmt::Debug,
+    io::Result as IOResult,
+    io::{Read, Seek, SeekFrom, Write},
+};
 
 pub const BLOCK_SIZE: usize = 4096;
 

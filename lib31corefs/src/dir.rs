@@ -1,14 +1,17 @@
-use crate::file::File;
-use crate::inode::{INode, ACL_DIRECTORY, PERMISSION_BITS};
-use crate::subvol::Subvolume;
-use crate::symlink::read_link_from_inode;
-use crate::utils::{base_name, dir_path};
-use crate::Filesystem;
-
-use std::collections::HashMap;
-use std::io::{Error, ErrorKind, Result as IOResult};
-use std::io::{Read, Seek, Write};
-use std::path::Path;
+use crate::{
+    Filesystem,
+    file::File,
+    inode::{ACL_DIRECTORY, INode, PERMISSION_BITS},
+    subvol::Subvolume,
+    symlink::read_link_from_inode,
+    utils::{base_name, dir_path},
+};
+use std::{
+    collections::HashMap,
+    io::{Error, ErrorKind, Result as IOResult},
+    io::{Read, Seek, Write},
+    path::Path,
+};
 
 pub struct Directory {
     fd: File,
@@ -59,7 +62,7 @@ impl Directory {
                     return Err(Error::new(
                         ErrorKind::NotFound,
                         format!("'{}' no such file", file.to_string_lossy()),
-                    ))
+                    ));
                 }
             }
             let inode = subvol.get_inode(device, inode_count)?;

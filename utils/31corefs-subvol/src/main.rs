@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use lib31corefs::{block::BLOCK_SIZE, Filesystem};
+use lib31corefs::{Filesystem, block::BLOCK_SIZE};
 
 #[derive(Parser)]
 struct Args {

@@ -1,11 +1,14 @@
-use std::io::{Error, ErrorKind, Result as IOResult};
-use std::io::{Read, Seek, Write};
-
-use crate::block::{BitmapBlock, BitmapIndexBlock, Block, INodeGroup, BLOCK_SIZE};
-use crate::btree::BtreeNode;
-use crate::inode::{INode, INODE_PER_GROUP};
-use crate::utils::get_sys_time;
-use crate::Filesystem;
+use crate::{
+    Filesystem,
+    block::{BLOCK_SIZE, BitmapBlock, BitmapIndexBlock, Block, INodeGroup},
+    btree::BtreeNode,
+    inode::{INODE_PER_GROUP, INode},
+    utils::get_sys_time,
+};
+use std::{
+    io::{Error, ErrorKind, Result as IOResult},
+    io::{Read, Seek, Write},
+};
 
 const SUBVOLUMES: usize = BLOCK_SIZE / SUBVOLUME_ENTRY_SIZE - 1;
 const SUBVOLUME_ENTRY_SIZE: usize = 128;
@@ -90,6 +93,8 @@ where
 const SUBVOL_TYPE_NORMAL: u8 = 1;
 const SUBVOL_TYPE_SNAP: u8 = 2;
 
+const SUBVOL_FLAG_RO: u8 = 1;
+
 #[derive(Default, Debug, Clone, Copy)]
 /**
  * # Data structure
@@ -107,7 +112,8 @@ const SUBVOL_TYPE_SNAP: u8 = 2;
  * |64   |72 |Create date|
  * |72   |80 |Snapshot count|
  * |80   |88 |Parent subvolume (for snapshot only)|
- * |88   |89 |Statement|
+ * |88   |89 |Statement |
+ * |89   |90 |Flags     |
  */
 pub struct SubvolumeEntry {
     pub id: u64,
@@ -123,6 +129,7 @@ pub struct SubvolumeEntry {
     pub parent_subvol: u64,
     pub state: u8,
     pub subvol_type: u8,
+    pub flags: u8,
 }
 
 impl SubvolumeEntry {
@@ -141,6 +148,7 @@ impl SubvolumeEntry {
             parent_subvol: u64::from_be_bytes(bytes[80..88].try_into().unwrap()),
             state: bytes[88],
             subvol_type: bytes[89],
+            flags: bytes[90],
         }
     }
     pub fn dump(&self) -> [u8; SUBVOLUME_ENTRY_SIZE] {
@@ -161,6 +169,9 @@ impl SubvolumeEntry {
         bytes[89] = self.subvol_type;
 
         bytes
+    }
+    pub fn is_readonly(&self) -> bool {
+        self.flags & SUBVOL_FLAG_RO != 0
     }
 }
 

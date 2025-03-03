@@ -1,7 +1,7 @@
 [package]
 name = "dump"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 authors = ["31core 31core@tutanota.com"]
 
@@ -10,7 +10,7 @@ name = "31corefs-dump"
 path = "src/main.rs"
 
 [dependencies]
-chrono = "0.4.38"
-clap = { version = "4.5.20", features = ["derive"] }
+chrono = "0.4.40"
+clap = { version = "4.5.31", features = ["derive"] }
 lib31corefs = { path = "../../lib31corefs" }
-uuid = { version = "1.6.1", features = ["v4"] }
+uuid = { version = "1.15.1", features = ["v4"] }

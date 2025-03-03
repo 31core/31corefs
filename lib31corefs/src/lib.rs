@@ -12,12 +12,14 @@ pub use dir::Directory;
 pub use file::File;
 pub use subvol::Subvolume;
 
-use std::io::{Error, ErrorKind, Result as IOResult};
-use std::io::{Read, Seek, Write};
-use std::path::{Path, PathBuf};
+use std::{
+    io::{Error, ErrorKind, Result as IOResult},
+    io::{Read, Seek, Write},
+    path::{Path, PathBuf},
+};
 
 use block::{Block, BlockGroup, SuperBlock};
-use subvol::{SubvolumeEntry, SubvolumeManager, SUBVOLUME_STATE_ALLOCATED};
+use subvol::{SUBVOLUME_STATE_ALLOCATED, SubvolumeEntry, SubvolumeManager};
 use utils::{base_name, dir_path, get_sys_time};
 
 pub const FS_MAGIC_HEADER: [u8; 4] = [0x31, 0xc0, 0x8e, 0xf5];
