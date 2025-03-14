@@ -9,4 +9,4 @@ authors = ["31core <31core@tutanota.com>"]
 path = "src/lib.rs"
 
 [dependencies]
-uuid = { version = "1.15.1", features = ["v4"] }
+uuid = { version = "1.16.0", features = ["v4"] }

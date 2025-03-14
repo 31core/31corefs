@@ -55,16 +55,15 @@ impl Directory {
         for file in path.as_ref().iter().skip(1) {
             let dirs = dir.list_dir(fs, subvol, device)?;
 
-            let inode_count;
-            match dirs.get(&file.to_string_lossy().to_string()) {
-                Some(count) => inode_count = *count,
+            let inode_count = match dirs.get(&file.to_string_lossy().to_string()) {
+                Some(count) => *count,
                 None => {
                     return Err(Error::new(
                         ErrorKind::NotFound,
                         format!("'{}' no such file", file.to_string_lossy()),
                     ));
                 }
-            }
+            };
             let inode = subvol.get_inode(device, inode_count)?;
 
             /* read link and open orignal directory */

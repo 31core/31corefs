@@ -42,10 +42,14 @@ impl Filesystem {
         fs.sb.uuid = *uuid::Uuid::new_v4().as_bytes();
         fs.sb.total_blocks = block_size as u64;
 
-        let mut group_start = 1;
-        while group_start <= (block_size - BLOCK_GROUP_MINIMAL_SZIE) as u64 {
+        let mut group_start = 1; // next to the super block
+        let mut group_id = 0;
+        while block_size as u64 > group_start
+            && block_size - group_start as usize >= BLOCK_GROUP_MINIMAL_SZIE
+        {
             let mut group = BlockGroup::create(group_start, block_size as u64 - group_start);
-            group.meta_data.id = fs.groups.len() as u64;
+            group.meta_data.id = group_id;
+            group_id += 1;
 
             group_start += group.blocks();
             fs.groups.push(group);
@@ -75,19 +79,11 @@ impl Filesystem {
         let mut groups = Vec::new();
 
         let mut group_start = 1;
-        loop {
-            let mut group = BlockGroup {
-                start_block: group_start,
-                ..Default::default()
-            };
-            group.load(device)?;
+        while group_start > 0 {
+            let group = BlockGroup::load(device, group_start)?;
             group_start = group.meta_data.next_group;
 
             groups.push(group);
-
-            if group_start == 0 {
-                break;
-            }
         }
 
         Ok(Self { sb, groups })
@@ -95,26 +91,26 @@ impl Filesystem {
     /** Allocate a data block */
     pub(crate) fn new_block(&mut self) -> IOResult<u64> {
         for group in &mut self.groups {
-            if let Some(count) = group.new_block() {
+            if let Some(relative_block) = group.allocate_block() {
                 self.sb.used_blocks += 1;
                 self.sb.real_used_blocks += 1;
-                return Ok(group.to_absolute_block(count));
+                return Ok(group.to_absolute_block(relative_block));
             }
         }
         Err(Error::new(ErrorKind::Other, "No enough block"))
     }
     /** Release a data block */
-    pub(crate) fn release_block(&mut self, count: u64) {
+    pub(crate) fn release_block(&mut self, absolute_block: u64) {
         let mut group_count = 0;
-        while !(group_count < self.groups.len() - 2
-            && count > self.groups[group_count].start_block
-            && count < self.groups[group_count + 1].start_block)
+        while !(group_count + 1 < self.groups.len()
+            && absolute_block > self.groups[group_count].start_block
+            && absolute_block < self.groups[group_count + 1].start_block)
         {
             group_count += 1;
         }
 
-        let relative_count = self.groups[group_count].to_relative_block(count);
-        self.groups[group_count].release_block(relative_count);
+        let relative_block = self.groups[group_count].to_relative_block(absolute_block);
+        self.groups[group_count].release_block(relative_block);
         self.sb.used_blocks -= 1;
         self.sb.real_used_blocks -= 1;
     }

@@ -24,7 +24,7 @@ Supported features:
 - Case-sentitive
 
 = Definitions
-#table(columns: (auto, auto),
+#table(columns: 2,
     [BLOCK_SIZE], [Unit size of blocks, currently supports 4096 block size.]
 )
 
@@ -50,7 +50,7 @@ struct super_block {
 *Field explanation*
 
 #table(
-    columns: (auto, auto),
+    columns: 2,
     [*Field*], [*Explanation*],
     [magic_header], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`.],
     [version], [`0x01` for version 1.],
@@ -58,8 +58,19 @@ struct super_block {
     [label], [A regular C string that ends with `NULL` character which can be ASCII or UTF-8 charset.]
 )
 
-= Block group
+= Block allocator
+== Block group
 The whole filesystem is divided into several block groups, each block group is an independent block allocator. A block group includes a bitmap block and $8 times "BLOCK_SIZE"$ data blocks. The meta block is the first block of a block group, it records allocation status of the block groups. And the bitmap is the second block of a block group and it is uesd to tracking allocation of the data blocks.
+
+#figure(caption: [Structure of block group])[
+#table(
+  columns: 3,
+  [meta block], [bitmap block], [data block],
+  [1 block], [1 block], [less than or equal to $8 times "BLOCK_SIZE"$ blocks],
+)]
+
+== Meta block
+Meta block records some information of a block group.
 
 *Definition*
 ```c
@@ -69,6 +80,9 @@ struct block_group_meta {
     uint64_t next_group;
 };
 ```
+
+== Block allocation
+Traverse block groups to find a block group where `block_group_meta.free_blocks` $> 0$, and then traverse bits in the bitmap block to find a free block. Mark the bit and decrease `block_group_meta.free_blocks` by 1.
 
 = B-Tree
 == B-Tree entry

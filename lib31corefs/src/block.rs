@@ -245,50 +245,51 @@ pub struct BlockGroup {
 }
 
 impl BlockGroup {
-    pub fn create(group_start: u64, totol_blocks: u64) -> Self {
+    /**
+     * * `start_block`: The first block of the group.
+     * * `total_blocks`: Blocks the group can use (including meta block and bitmap block).
+     */
+    pub fn create(start_block: u64, total_blocks: u64) -> Self {
         let mut group = BlockGroup {
-            start_block: group_start,
+            start_block,
             ..Default::default()
         };
 
-        if totol_blocks <= group.blocks() {
+        if total_blocks <= group.blocks() {
             group.meta_data.next_group = 0;
             const META_BLOCK: u64 = 1;
-            group.meta_data.free_blocks = totol_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
+            group.meta_data.free_blocks = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
         } else {
-            group.meta_data.next_group = group_start + group.blocks();
+            group.meta_data.next_group = start_block + group.blocks();
             group.meta_data.free_blocks = 8 * BLOCK_SIZE as u64;
         }
 
         group
     }
-    pub fn load<D>(&mut self, device: &mut D) -> IOResult<()>
+    pub fn load<D>(device: &mut D, start_block: u64) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
-        self.meta_data = BlockGroupMeta::load_block(device, self.start_block)?;
-        self.block_map = BitmapBlock::load_block(device, self.start_block + 1)?;
-
-        Ok(())
+        Ok(Self {
+            start_block,
+            meta_data: BlockGroupMeta::load_block(device, start_block)?,
+            block_map: BitmapBlock::load_block(device, start_block + 1)?,
+        })
     }
     /** Allocate a data block */
-    pub fn new_block(&mut self) -> Option<u64> {
+    pub fn allocate_block(&mut self) -> Option<u64> {
         if self.meta_data.free_blocks > 0 {
-            if let Some(off) = self.block_map.find_unused() {
-                self.block_map.set_used(off);
+            if let Some(relative_block) = self.block_map.find_unused() {
+                self.block_map.set_used(relative_block);
                 self.meta_data.free_blocks -= 1;
-                return Some(off);
+                return Some(relative_block);
             }
         }
         None
     }
-    /** Clone a data block */
-    pub fn clone_block(&mut self, count: u64) {
-        self.block_map.get_used(count);
-    }
     /** Release a data block */
-    pub fn release_block(&mut self, count: u64) {
-        self.block_map.set_unused(count);
+    pub fn release_block(&mut self, relative_block: u64) {
+        self.block_map.set_unused(relative_block);
         self.meta_data.free_blocks += 1;
     }
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
@@ -301,16 +302,19 @@ impl BlockGroup {
         Ok(())
     }
     #[inline]
+    /** A full block group occupies N blocks */
     pub(crate) fn blocks(&self) -> u64 {
         const META_BLOCK: u64 = 1;
         META_BLOCK + BLOCK_MAP_SIZE as u64 + 8 * BLOCK_SIZE as u64
     }
     #[inline]
+    /** Map absolute block number number into relative block */
     pub(crate) fn to_relative_block(&self, absolute_block: u64) -> u64 {
         const META_BLOCK: u64 = 1;
         absolute_block - self.start_block - META_BLOCK - BLOCK_MAP_SIZE as u64
     }
     #[inline]
+    /** Map relative block number into absolute block number */
     pub(crate) fn to_absolute_block(&self, relative_block: u64) -> u64 {
         const META_BLOCK: u64 = 1;
         self.start_block + META_BLOCK + BLOCK_MAP_SIZE as u64 + relative_block
@@ -362,10 +366,10 @@ impl BitmapBlock {
      * Find an unmarked bit and return its position.
      */
     pub fn find_unused(&self) -> Option<u64> {
-        for (i, byte) in self.bytes.iter().enumerate() {
+        for (byte_n, byte) in self.bytes.iter().enumerate() {
             if *byte != 0xff {
-                for j in 0..8 {
-                    let position = (i * 8 + j) as u64;
+                for bit in 0..8 {
+                    let position = (byte_n * 8 + bit) as u64;
                     if !self.get_used(position) {
                         return Some(position);
                     }
