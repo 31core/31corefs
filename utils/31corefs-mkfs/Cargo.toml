@@ -10,5 +10,5 @@ name = "31corefs-mkfs"
 path = "src/main.rs"
 
 [dependencies]
-clap = { version = "4.5.32", features = ["derive"] }
+clap = { version = "4.5.37", features = ["derive"] }
 lib31corefs = { path = "../../lib31corefs" }

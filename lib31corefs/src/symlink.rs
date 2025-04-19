@@ -1,10 +1,10 @@
 use crate::{
-    block::LinkedContentTable,
+    Filesystem,
+    block::{Block, LinkedContentTable},
     dir::Directory,
     inode::{ACL_SYMBOLLINK, INode, PERMISSION_BITS},
     subvol::Subvolume,
     utils::{base_name, dir_path},
-    {Block, Filesystem},
 };
 use std::{
     io::Result as IOResult,
@@ -33,20 +33,18 @@ where
         ..Default::default()
     };
 
-    loop {
+    while !point_to.is_empty() {
         let mut lct = LinkedContentTable::default();
         let size = std::cmp::min(point_to.len(), lct.content.len());
-        lct.content[..size].copy_from_slice(point_to[..size].as_bytes());
+        lct.content[..size].copy_from_slice(&point_to.as_bytes()[..size]);
         point_to = &point_to[size..];
 
-        if point_to.is_empty() {
-            lct.sync(device, content_ptr)?;
-            break;
-        } else {
+        if !point_to.is_empty() {
             content_ptr = subvol.new_block(fs, device)?;
             lct.next = content_ptr;
-            lct.sync(device, content_ptr)?;
         }
+
+        lct.sync(device, content_ptr)?;
     }
 
     subvol.set_inode(fs, device, inode_count, inode)?;

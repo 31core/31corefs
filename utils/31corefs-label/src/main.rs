@@ -21,7 +21,7 @@ fn main() -> std::io::Result<()> {
 
     match args.label {
         Some(label) => {
-            fs.sb.set_label(&label);
+            fs.sb.set_label(label);
             fs.sync_meta_data(&mut device)?;
         }
         None => println!("{}", fs.sb.get_label()),

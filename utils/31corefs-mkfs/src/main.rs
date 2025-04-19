@@ -28,7 +28,5 @@ fn main() -> IOResult<()> {
 
     fs.sb.set_label(&args.label);
 
-    fs.sync_meta_data(&mut device)?;
-
-    Ok(())
+    fs.sync_meta_data(&mut device)
 }

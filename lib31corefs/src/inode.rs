@@ -8,6 +8,7 @@ pub const ACL_DIRECTORY: u16 = 0x2;
 pub const ACL_SYMBOLLINK: u16 = 0x4;
 pub const ACL_CHAR: u16 = 0x8;
 pub const ACL_BLOCK: u16 = 0x10;
+pub const ACL_EMPTY: u16 = 0xffff;
 
 pub const PERMISSION_BITS: usize = 9;
 
@@ -45,7 +46,7 @@ pub struct INode {
 impl INode {
     pub fn empty() -> Self {
         Self {
-            acl: 0xffff,
+            acl: ACL_EMPTY,
             ..Default::default()
         }
     }
@@ -98,7 +99,7 @@ impl INode {
         self.acl_type() == ACL_BLOCK
     }
     pub fn is_empty_inode(&self) -> bool {
-        self.acl == 0xffff
+        self.acl == ACL_EMPTY
     }
     pub fn update_atime(&mut self) {
         self.atime = get_sys_time();

@@ -1,6 +1,12 @@
 #set page(numbering: "1")
 #set par(justify: true)
-#set table(stroke: 0.5pt)
+#set table(
+  stroke: (x, y) => if y == 0 {
+    (bottom: 1pt + black)
+  } else {
+    (bottom: 0.5pt + black)
+  },
+)
 #set heading(numbering: "1.")
 
 #align(center)[#text(17pt)[*31corefs specification*]]
@@ -25,7 +31,8 @@ Supported features:
 
 = Definitions
 #table(columns: 2,
-    [BLOCK_SIZE], [Unit size of blocks, currently supports 4096 block size.]
+  [*Constant*], [*Description*],
+  [`BLOCK_SIZE`], [Unit size of blocks, currently supports 4096 block size.]
 )
 
 = Super block
@@ -50,12 +57,12 @@ struct super_block {
 *Field explanation*
 
 #table(
-    columns: 2,
-    [*Field*], [*Explanation*],
-    [magic_header], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`.],
-    [version], [`0x01` for version 1.],
-    [uuid], [Recommend to use UUIDv4.],
-    [label], [A regular C string that ends with `NULL` character which can be ASCII or UTF-8 charset.]
+  columns: 2,
+  [*Field*], [*Explanation*],
+  [`magic_header`], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`.],
+  [`version`], [`0x01` for version 1.],
+  [`uuid`], [Recommend to use UUIDv4.],
+  [`label`], [A regular C string that ends with `NULL` character which can be ASCII or UTF-8 charset.]
 )
 
 = Block allocator
@@ -65,6 +72,7 @@ The whole filesystem is divided into several block groups, each block group is a
 #figure(caption: [Structure of block group])[
 #table(
   columns: 3,
+  stroke: 0.5pt,
   [meta block], [bitmap block], [data block],
   [1 block], [1 block], [less than or equal to $8 times "BLOCK_SIZE"$ blocks],
 )]
@@ -139,8 +147,9 @@ A B-Tree node (both internal and leaf) is stored in a block, its `rc` value mean
 
 B-Tree type definitions:
 #table(columns: 2,
-  [BTREE_NODE_TYPE_INTERNAL], [`0xf0`],
-  [BTREE_NODE_TYPE_LEAF], [`0x0f`],
+  [*Constant*], [*Value*],
+  [`BTREE_NODE_TYPE_INTERNAL`], [`0xf0`],
+  [`BTREE_NODE_TYPE_LEAF`], [`0x0f`],
 )
 
 = Inode
@@ -165,17 +174,17 @@ struct inode {
 
 *Field explanation*
 #table(
-    columns: (auto, auto),
-    [*Field*], [*Description*],
-    [acl], [POSIX ACL],
-    [uid], [UID of owner],
-    [gid], [GID of owner],
-    [atime], [Last access time (unit: nano sec)],
-    [ctime], [Last change time (unit: nano sec)],
-    [mtime], [Last modify time (unit: nano sec)],
-    [hlinks], [Count of hard links],
-    [size], [File size],
-    [btree_root], [Root B-Tree node block of content management]
+  columns: 2,
+  [*Field*], [*Description*],
+  [`acl`], [POSIX ACL],
+  [`uid`], [UID of owner],
+  [`gid`], [GID of owner],
+  [`atime`], [Last access time (unit: nano sec)],
+  [`ctime`], [Last change time (unit: nano sec)],
+  [`mtime`], [Last modify time (unit: nano sec)],
+  [`hlinks`], [Count of hard links],
+  [`size`], [File size],
+  [`btree_root`], [Root B-Tree node block of content management]
 )
 
 *Empty inode*
@@ -185,8 +194,9 @@ An empty Inode always has `acl` valued `0xffff`.
 *ACLs*
 
 #table(
-    columns: (4 * 7%, 4 * 9%),
-    [File type (7 bits)], [Permission (9 bits)]
+  columns: (4 * 7%, 4 * 9%),
+  stroke: 0.5pt,
+  [File type (7 bits)], [Permission (9 bits)]
 )
 
 *File type*
@@ -200,11 +210,12 @@ An empty Inode always has `acl` valued `0xffff`.
 *Permission*
 
 #table(
-    columns: (auto, auto, auto, auto, auto, auto, auto, auto, auto),
-    table.cell(colspan: 3)[Owner],
-    table.cell(colspan: 3)[Group],
-    table.cell(colspan: 3)[Other],
-    [R], [W], [X], [R], [W], [X], [R], [W], [X],
+  columns: 9,
+  stroke: 0.5pt,
+  table.cell(colspan: 3)[Owner],
+  table.cell(colspan: 3)[Group],
+  table.cell(colspan: 3)[Other],
+  [R], [W], [X], [R], [W], [X], [R], [W], [X],
 )
 
 == Inode group
@@ -245,13 +256,15 @@ struct subvolume_entry {
 
 Subvolume statement used by `state` field:
 #table(columns: 2,
-    [SUBVOLUME_STATE_ALLOCATED], [`0x01`],
-    [SUBVOLUME_STATE_REMOVED], [`0x02`]
+  [*Constant*], [*Value*],
+  [`SUBVOLUME_STATE_ALLOCATED`], [`0x01`],
+  [`SUBVOLUME_STATE_REMOVED`], [`0x02`]
 )
 
 Subvolume statement used by `flags` field:
 #table(columns: 2,
-    [SUBVOLUME_FLAG_READONLY], [`0x01`],
+  [*Constant*], [*Value*],
+  [`SUBVOLUME_FLAG_READONLY`], [`0x01`],
 )
 
 == Subvolume manager

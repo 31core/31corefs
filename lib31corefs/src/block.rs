@@ -1,5 +1,5 @@
 use crate::{
-    Filesystem,
+    FS_MAGIC_HEADER, Filesystem,
     inode::{INODE_PER_GROUP, INODE_SIZE, INode},
     subvol::Subvolume,
 };
@@ -46,14 +46,12 @@ pub(crate) fn save_block<D>(
     device: &mut D,
     block_count: u64,
     block: [u8; BLOCK_SIZE],
-) -> IOResult<[u8; BLOCK_SIZE]>
+) -> IOResult<()>
 where
     D: Read + Write + Seek,
 {
     device.seek(SeekFrom::Start(block_count * BLOCK_SIZE as u64))?;
-    device.write_all(&block)?;
-
-    Ok(block)
+    device.write_all(&block)
 }
 
 pub trait Block: Default + Debug {
@@ -73,9 +71,7 @@ pub trait Block: Default + Debug {
     where
         D: Read + Write + Seek,
     {
-        device.seek(SeekFrom::Start(block_count * BLOCK_SIZE as u64))?;
-        device.write_all(&self.dump())?;
-        Ok(())
+        save_block(device, block_count, self.dump())
     }
     /** Allocate and initialize an empty block on device */
     fn allocate_on_block<D>(fs: &mut Filesystem, device: &mut D) -> IOResult<u64>
@@ -182,33 +178,21 @@ impl Block for SuperBlock {
 
 impl SuperBlock {
     /** Set filesystem label */
-    pub fn set_label(&mut self, label: &str) {
+    pub fn set_label<S>(&mut self, label: S)
+    where
+        S: AsRef<str>,
+    {
         self.label = [0; LABEL_MAX_LEN];
-        self.label[..label.len()].copy_from_slice(label.as_bytes());
+        self.label[..label.as_ref().len()].copy_from_slice(label.as_ref().as_bytes());
     }
     /** Get filesystem label */
     pub fn get_label(&self) -> String {
-        let mut null_idx = self.label.len();
-
-        for (i, byte) in self.label.iter().enumerate() {
-            if *byte == 0 {
-                null_idx = i;
-                break;
-            }
-        }
+        let null_idx = self.label.binary_search(&b'\0').unwrap_or(LABEL_MAX_LEN);
 
         String::from_utf8_lossy(&self.label[..null_idx]).to_string()
     }
-    pub(crate) fn is_valid(bytes: &[u8]) -> bool {
-        /* check magic header */
-        for (i, byte) in crate::FS_MAGIC_HEADER.iter().enumerate() {
-            if *byte != bytes[i] {
-                return false;
-            }
-        }
-
-        /* check fs version */
-        bytes[4] == crate::FS_VERSION
+    pub(crate) fn is_valid(bytes: &[u8; BLOCK_SIZE]) -> bool {
+        bytes[4] == crate::FS_VERSION && bytes[0..4] == FS_MAGIC_HEADER
     }
 }
 
@@ -297,9 +281,7 @@ impl BlockGroup {
         D: Read + Write + Seek,
     {
         self.meta_data.sync(device, self.start_block)?;
-        self.block_map.sync(device, self.start_block + 1)?;
-
-        Ok(())
+        self.block_map.sync(device, self.start_block + 1)
     }
     #[inline]
     /** A full block group occupies N blocks */
