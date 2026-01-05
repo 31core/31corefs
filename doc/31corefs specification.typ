@@ -30,6 +30,8 @@ Supported features:
 - Case-sentitive
 
 = Definitions
+*Global constants*
+
 #table(columns: 2,
   [*Constant*], [*Description*],
   [`BLOCK_SIZE`], [Unit size of blocks, currently supports 4096 block size.]
@@ -67,13 +69,13 @@ struct super_block {
 
 = Block allocator
 == Block group
-The whole filesystem is divided into several block groups, each block group is an independent block allocator. A block group includes a bitmap block and $8 times "BLOCK_SIZE"$ data blocks. The meta block is the first block of a block group, it records allocation status of the block groups. And the bitmap is the second block of a block group and it is uesd to tracking allocation of the data blocks.
+The whole filesystem is divided into several block groups, each block group is an independent block allocator. A block group includes a meta block, a bitmap block and $8 times "BLOCK_SIZE"$ data blocks. The meta block is the first block of a block group, it records allocation status of the block groups. And the bitmap is the second block of a block group and it is uesd to tracking allocation of the data blocks.
 
 #figure(caption: [Structure of block group])[
 #table(
   columns: 3,
   stroke: 0.5pt,
-  [meta block], [bitmap block], [data block],
+  [meta block], [bitmap block], [data blocks],
   [1 block], [1 block], [less than or equal to $8 times "BLOCK_SIZE"$ blocks],
 )]
 
@@ -84,13 +86,25 @@ Meta block records some information of a block group.
 ```c
 struct block_group_meta {
     uint64_t id;
-    uint64_t free_blocks;
     uint64_t next_group;
+    uint64_t capacity;
+    uint64_t free_blocks;
 };
 ```
 
+#table(
+  columns: 2,
+  [*Field*], [*Description*],
+  [`id`], [Block group ID, starting from `0`.],
+  [`next_group`], [Block of the next block group, for the last block group it would be `0`.],
+  [`capacity`], [Number of data blocks.],
+  [`free_blocks`], [Number of free data blocks.],
+)
+
+*Note:* Block group loading *must* follows `next_group` in `block_group_meta` instead of hard coded block number.
+
 == Block allocation
-Traverse block groups to find a block group where `block_group_meta.free_blocks` $> 0$, and then traverse bits in the bitmap block to find a free block. Mark the bit and decrease `block_group_meta.free_blocks` by 1.
+Traverse block groups to find a block group where `block_group_meta.free_blocks` is greater than `0`, and then traverse bits in the bitmap block to find a free block. And then mark the bit to 1, decrease `block_group_meta.free_blocks` by 1, finally returns the block number.
 
 = B-Tree
 == B-Tree entry

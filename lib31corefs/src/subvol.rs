@@ -562,10 +562,7 @@ impl IGroupBitmap {
                 byte -= allocator.bitmap_data.len();
                 allocator_count = allocator.next;
             } else {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unexpected end of linked list.",
-                ));
+                return Err(Error::other("Unexpected end of linked list."));
             }
         }
     }
@@ -611,10 +608,7 @@ impl IGroupBitmap {
                 last_allocator_count = Some(allocator_count);
                 allocator_count = allocator.next;
             } else {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unexpected end of linked list.",
-                ));
+                return Err(Error::other("Unexpected end of linked list."));
             }
         }
     }
@@ -660,10 +654,7 @@ impl IGroupBitmap {
                 last_allocator_count = Some(allocator_count);
                 allocator_count = allocator.next;
             } else {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unexpected end of linked list.",
-                ));
+                return Err(Error::other("Unexpected end of linked list."));
             }
         }
     }
@@ -688,10 +679,7 @@ impl IGroupBitmap {
             if allocator.next != 0 {
                 allocator_count = allocator.next;
             } else {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unexpected end of linked list.",
-                ));
+                return Err(Error::other("Unexpected end of linked list."));
             }
         }
     }
@@ -899,10 +887,7 @@ impl Subvolume {
                 count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
                 index = BitmapIndexBlock::load_block(device, index.next)?;
             } else {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unexpected end of linked list.",
-                ));
+                return Err(Error::other("Unexpected end of linked list."));
             }
         }
 
@@ -934,10 +919,7 @@ impl Subvolume {
                 count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
                 index = BitmapIndexBlock::load_block(device, index.next)?;
             } else {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unexpected end of linked list.",
-                ));
+                return Err(Error::other("Unexpected end of linked list."));
             }
         }
 
@@ -975,10 +957,7 @@ impl Subvolume {
                 count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
                 index = BitmapIndexBlock::load_block(device, index.next)?;
             } else {
-                return Err(Error::new(
-                    ErrorKind::Other,
-                    "Unexpected end of linked list.",
-                ));
+                return Err(Error::other("Unexpected end of linked list."));
             }
         }
 

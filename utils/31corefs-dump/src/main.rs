@@ -3,7 +3,7 @@ use lib31corefs::Filesystem;
 
 #[derive(Parser, Debug)]
 struct Args {
-    /// Path to device
+    /** Path to device */
     device: String,
 }
 
@@ -20,9 +20,12 @@ fn main() -> std::io::Result<()> {
     println!("UUID: {}", uuid::Uuid::from_bytes(fs.sb.uuid));
     println!(
         "Creation time: {}",
-        chrono::DateTime::from_timestamp(fs.sb.creation_time as i64, 0)
-            .unwrap()
-            .format("%Y-%m-%d %H:%M:%S")
+        chrono::DateTime::from_timestamp(
+            (fs.sb.creation_time / 1_000_000_000) as i64,
+            (fs.sb.creation_time % 1_000_000_000) as u32
+        )
+        .unwrap()
+        .format("%Y-%m-%d %H:%M:%S")
     );
     println!("Dufault subvolume: {}", fs.sb.default_subvol);
     println!("Total blocks: {}", fs.sb.total_blocks);

@@ -12,13 +12,12 @@ pub use dir::Directory;
 pub use file::File;
 pub use subvol::Subvolume;
 
+use block::{Block, BlockGroup, SuperBlock};
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
     io::{Read, Seek, Write},
     path::{Path, PathBuf},
 };
-
-use block::{Block, BlockGroup, SuperBlock};
 use subvol::{SUBVOLUME_STATE_ALLOCATED, SubvolumeEntry, SubvolumeManager};
 use utils::{base_name, dir_path, get_sys_time};
 
@@ -48,7 +47,7 @@ impl Filesystem {
             && block_size - group_start as usize >= BLOCK_GROUP_MINIMAL_SZIE
         {
             let mut group = BlockGroup::create(group_start, block_size as u64 - group_start);
-            group.meta_data.id = group_id;
+            group.meta_block.id = group_id;
             group_id += 1;
 
             group_start += group.blocks();
@@ -81,7 +80,7 @@ impl Filesystem {
         let mut group_start = 1;
         while group_start > 0 {
             let group = BlockGroup::load(device, group_start)?;
-            group_start = group.meta_data.next_group;
+            group_start = group.meta_block.next_group;
 
             groups.push(group);
         }
@@ -97,14 +96,16 @@ impl Filesystem {
                 return Ok(group.to_absolute_block(relative_block));
             }
         }
-        Err(Error::new(ErrorKind::Other, "No enough block"))
+        Err(Error::other("No enough block"))
     }
     /** Release a data block */
     pub(crate) fn release_block(&mut self, absolute_block: u64) {
+        /* find which block group contains the block */
         let mut group_count = 0;
         while !(group_count + 1 < self.groups.len()
-            && absolute_block > self.groups[group_count].start_block
-            && absolute_block < self.groups[group_count + 1].start_block)
+            && self.groups[group_count]
+                .block_range()
+                .contains(&absolute_block))
         {
             group_count += 1;
         }
@@ -238,13 +239,13 @@ impl Filesystem {
         D: Read + Write + Seek,
         P: AsRef<Path>,
     {
-        if let Ok(fd) = file::File::open(self, subvol, device, path.as_ref()) {
-            if fd.get_inode().is_symlink() {
-                return true;
-            }
+        if let Ok(fd) = file::File::open(self, subvol, device, path.as_ref())
+            && fd.get_inode().is_symlink()
+        {
+            true
+        } else {
+            false
         }
-
-        false
     }
     /** List a diretory */
     pub fn list_dir<D, P>(

@@ -7,6 +7,7 @@ use std::{
     fmt::Debug,
     io::Result as IOResult,
     io::{Read, Seek, SeekFrom, Write},
+    ops::Range,
 };
 
 pub const BLOCK_SIZE: usize = 4096;
@@ -14,7 +15,7 @@ pub const BLOCK_SIZE: usize = 4096;
 const BLOCK_MAP_SIZE: usize = 1;
 const LABEL_MAX_LEN: usize = 256;
 
-/** Copy out a mutiple referenced data block */
+/** Copy out a multiple referenced data block */
 pub fn block_copy_out<D>(
     fs: &mut Filesystem,
     subvol: &mut Subvolume,
@@ -160,7 +161,7 @@ impl Block for SuperBlock {
     fn dump(&self) -> [u8; BLOCK_SIZE] {
         let mut bytes = [0; BLOCK_SIZE];
 
-        bytes[..4].copy_from_slice(&crate::FS_MAGIC_HEADER);
+        bytes[..4].copy_from_slice(&FS_MAGIC_HEADER);
         bytes[4] = crate::FS_VERSION;
         bytes[5..13].copy_from_slice(&self.groups.to_be_bytes());
         bytes[13..29].copy_from_slice(&self.uuid);
@@ -199,23 +200,26 @@ impl SuperBlock {
 #[derive(Default, Debug, Clone)]
 pub struct BlockGroupMeta {
     pub id: u64,
-    pub free_blocks: u64,
     pub next_group: u64,
+    pub capacity: u64,
+    pub free_blocks: u64,
 }
 
 impl Block for BlockGroupMeta {
     fn load(bytes: [u8; BLOCK_SIZE]) -> Self {
         Self {
             id: u64::from_be_bytes(bytes[..8].try_into().unwrap()),
-            free_blocks: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
-            next_group: u64::from_be_bytes(bytes[16..24].try_into().unwrap()),
+            next_group: u64::from_be_bytes(bytes[8..16].try_into().unwrap()),
+            capacity: u64::from_be_bytes(bytes[16..24].try_into().unwrap()),
+            free_blocks: u64::from_be_bytes(bytes[24..32].try_into().unwrap()),
         }
     }
     fn dump(&self) -> [u8; BLOCK_SIZE] {
         let mut block = [0; BLOCK_SIZE];
         block[..8].copy_from_slice(&self.id.to_be_bytes());
-        block[8..16].copy_from_slice(&self.free_blocks.to_be_bytes());
-        block[16..24].copy_from_slice(&self.next_group.to_be_bytes());
+        block[8..16].copy_from_slice(&self.next_group.to_be_bytes());
+        block[16..24].copy_from_slice(&self.capacity.to_be_bytes());
+        block[24..32].copy_from_slice(&self.free_blocks.to_be_bytes());
 
         block
     }
@@ -223,9 +227,11 @@ impl Block for BlockGroupMeta {
 
 #[derive(Default, Debug, Clone)]
 pub struct BlockGroup {
-    pub meta_data: BlockGroupMeta,
-    pub start_block: u64,
+    pub meta_block: BlockGroupMeta,
     pub block_map: BitmapBlock,
+
+    /** Start of data blocks. */
+    start_block: u64,
 }
 
 impl BlockGroup {
@@ -234,18 +240,20 @@ impl BlockGroup {
      * * `total_blocks`: Blocks the group can use (including meta block and bitmap block).
      */
     pub fn create(start_block: u64, total_blocks: u64) -> Self {
+        const META_BLOCK: u64 = 1;
         let mut group = BlockGroup {
-            start_block,
+            start_block: start_block + META_BLOCK + BLOCK_MAP_SIZE as u64,
             ..Default::default()
         };
 
         if total_blocks <= group.blocks() {
-            group.meta_data.next_group = 0;
-            const META_BLOCK: u64 = 1;
-            group.meta_data.free_blocks = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
+            group.meta_block.next_group = 0;
+            group.meta_block.capacity = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
+            group.meta_block.free_blocks = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
         } else {
-            group.meta_data.next_group = start_block + group.blocks();
-            group.meta_data.free_blocks = 8 * BLOCK_SIZE as u64;
+            group.meta_block.next_group = start_block + group.blocks();
+            group.meta_block.capacity = 8 * BLOCK_SIZE as u64;
+            group.meta_block.free_blocks = 8 * BLOCK_SIZE as u64;
         }
 
         group
@@ -256,31 +264,32 @@ impl BlockGroup {
     {
         Ok(Self {
             start_block,
-            meta_data: BlockGroupMeta::load_block(device, start_block)?,
+            meta_block: BlockGroupMeta::load_block(device, start_block)?,
             block_map: BitmapBlock::load_block(device, start_block + 1)?,
         })
     }
     /** Allocate a data block */
     pub fn allocate_block(&mut self) -> Option<u64> {
-        if self.meta_data.free_blocks > 0 {
-            if let Some(relative_block) = self.block_map.find_unused() {
-                self.block_map.set_used(relative_block);
-                self.meta_data.free_blocks -= 1;
-                return Some(relative_block);
-            }
+        if self.meta_block.free_blocks > 0
+            && let Some(relative_block) = self.block_map.find_unused()
+            && relative_block < self.meta_block.capacity
+        {
+            self.block_map.set_used(relative_block);
+            self.meta_block.free_blocks -= 1;
+            return Some(relative_block);
         }
         None
     }
     /** Release a data block */
     pub fn release_block(&mut self, relative_block: u64) {
         self.block_map.set_unused(relative_block);
-        self.meta_data.free_blocks += 1;
+        self.meta_block.free_blocks += 1;
     }
     pub fn sync<D>(&mut self, device: &mut D) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        self.meta_data.sync(device, self.start_block)?;
+        self.meta_block.sync(device, self.start_block)?;
         self.block_map.sync(device, self.start_block + 1)
     }
     #[inline]
@@ -290,7 +299,7 @@ impl BlockGroup {
         META_BLOCK + BLOCK_MAP_SIZE as u64 + 8 * BLOCK_SIZE as u64
     }
     #[inline]
-    /** Map absolute block number number into relative block */
+    /** Map absolute block number into relative block */
     pub(crate) fn to_relative_block(&self, absolute_block: u64) -> u64 {
         const META_BLOCK: u64 = 1;
         absolute_block - self.start_block - META_BLOCK - BLOCK_MAP_SIZE as u64
@@ -300,6 +309,11 @@ impl BlockGroup {
     pub(crate) fn to_absolute_block(&self, relative_block: u64) -> u64 {
         const META_BLOCK: u64 = 1;
         self.start_block + META_BLOCK + BLOCK_MAP_SIZE as u64 + relative_block
+    }
+    #[inline]
+    /** Range of date blocks */
+    pub(crate) fn block_range(&self) -> Range<u64> {
+        self.start_block..(self.start_block + self.meta_block.capacity)
     }
 }
 

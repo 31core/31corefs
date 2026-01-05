@@ -573,12 +573,11 @@ impl BtreeNode {
 
                 if let Some(id) = result.0 {
                     return Ok((Some(id), None));
-                } else if let Some(id) = result.1 {
-                    if i < self.entries.len() - 1 && id + 1 < self.entries[i + 1].key
-                        || i == self.entries.len() - 1
-                    {
-                        return Ok((Some(id + 1), None));
-                    }
+                } else if let Some(id) = result.1
+                    && (i < self.entries.len() - 1 && id + 1 < self.entries[i + 1].key
+                        || i == self.entries.len() - 1)
+                {
+                    return Ok((Some(id + 1), None));
                 }
             }
         } else if self.entries.len() > 1 {

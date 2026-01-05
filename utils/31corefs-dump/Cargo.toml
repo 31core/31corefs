@@ -10,7 +10,7 @@ name = "31corefs-dump"
 path = "src/main.rs"
 
 [dependencies]
-chrono = "0.4.40"
-clap = { version = "4.5.37", features = ["derive"] }
+chrono = "0.4.42"
+clap = { version = "4.5", features = ["derive"] }
 lib31corefs = { path = "../../lib31corefs" }
-uuid = { version = "1.16.0", features = ["v4"] }
+uuid = { version = "1.19", features = ["v4"] }
