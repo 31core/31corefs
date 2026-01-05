@@ -46,11 +46,10 @@ impl Filesystem {
         while block_size as u64 > group_start
             && block_size - group_start as usize >= BLOCK_GROUP_MINIMAL_SZIE
         {
-            let mut group = BlockGroup::create(group_start, block_size as u64 - group_start);
-            group.meta.id = group_id;
+            let group = BlockGroup::create(group_id, group_start, block_size as u64 - group_start);
             group_id += 1;
 
-            group_start += group.blocks();
+            group_start += BlockGroup::max_blocks();
             fs.groups.push(group);
         }
 
@@ -101,17 +100,17 @@ impl Filesystem {
     /** Release a data block */
     pub(crate) fn release_block(&mut self, absolute_block: u64) {
         /* find which block group contains the block */
-        let mut group_count = 0;
-        while !(group_count + 1 < self.groups.len()
-            && self.groups[group_count]
+        let mut group_index = 0;
+        while !(group_index + 1 < self.groups.len()
+            && self.groups[group_index]
                 .block_range()
                 .contains(&absolute_block))
         {
-            group_count += 1;
+            group_index += 1;
         }
 
-        let relative_block = self.groups[group_count].to_relative_block(absolute_block);
-        self.groups[group_count].release_block(relative_block);
+        let relative_block = self.groups[group_index].to_relative_block(absolute_block);
+        self.groups[group_index].release_block(relative_block);
         self.sb.used_blocks -= 1;
         self.sb.real_used_blocks -= 1;
     }

@@ -20,39 +20,35 @@ pub fn block_copy_out<D>(
     fs: &mut Filesystem,
     subvol: &mut Subvolume,
     device: &mut D,
-    count: u64,
+    block_index: u64,
 ) -> IOResult<u64>
 where
     D: Read + Write + Seek,
 {
-    let block = load_block(device, count)?;
-    let new_block = subvol.new_block(fs, device)?;
-    save_block(device, new_block, block)?;
-    Ok(new_block)
+    let block_data = load_block(device, block_index)?;
+    let new_block_index = subvol.new_block(fs, device)?;
+    save_block(device, new_block_index, block_data)?;
+    Ok(new_block_index)
 }
 
-pub(crate) fn load_block<D>(device: &mut D, block_count: u64) -> IOResult<[u8; BLOCK_SIZE]>
+pub(crate) fn load_block<D>(device: &mut D, block_index: u64) -> IOResult<[u8; BLOCK_SIZE]>
 where
     D: Read + Write + Seek,
 {
-    let mut block = [0; BLOCK_SIZE];
-    device.seek(SeekFrom::Start(block_count * BLOCK_SIZE as u64))?;
-    device.read_exact(&mut block)?;
+    let mut buf = [0; BLOCK_SIZE];
+    device.seek(SeekFrom::Start(block_index * BLOCK_SIZE as u64))?;
+    device.read_exact(&mut buf)?;
 
-    Ok(block)
+    Ok(buf)
 }
 
 /** Store data block */
-pub(crate) fn save_block<D>(
-    device: &mut D,
-    block_count: u64,
-    block: [u8; BLOCK_SIZE],
-) -> IOResult<()>
+pub(crate) fn save_block<D>(device: &mut D, block_index: u64, buf: [u8; BLOCK_SIZE]) -> IOResult<()>
 where
     D: Read + Write + Seek,
 {
-    device.seek(SeekFrom::Start(block_count * BLOCK_SIZE as u64))?;
-    device.write_all(&block)
+    device.seek(SeekFrom::Start(block_index * BLOCK_SIZE as u64))?;
+    device.write_all(&buf)
 }
 
 pub trait Block: Default + Debug {
@@ -61,27 +57,27 @@ pub trait Block: Default + Debug {
     /** Dump to bytes */
     fn dump(&self) -> [u8; BLOCK_SIZE];
     /** Load from device */
-    fn load_block<D>(device: &mut D, block_count: u64) -> IOResult<Self>
+    fn load_block<D>(device: &mut D, block_index: u64) -> IOResult<Self>
     where
         D: Read + Write + Seek,
     {
-        Ok(Self::load(load_block(device, block_count)?))
+        Ok(Self::load(load_block(device, block_index)?))
     }
     /** Synchronize to device */
-    fn sync<D>(&mut self, device: &mut D, block_count: u64) -> IOResult<()>
+    fn sync<D>(&mut self, device: &mut D, block_index: u64) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        save_block(device, block_count, self.dump())
+        save_block(device, block_index, self.dump())
     }
     /** Allocate and initialize an empty block on device */
     fn allocate_on_block<D>(fs: &mut Filesystem, device: &mut D) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
-        let block_count = fs.new_block()?;
-        Self::default().sync(device, block_count)?;
-        Ok(block_count)
+        let block_index = fs.new_block()?;
+        Self::default().sync(device, block_index)?;
+        Ok(block_index)
     }
     /** Allocate and initialize an empty block on device, also managed by subvolume bitmap */
     fn allocate_on_block_subvol<D>(
@@ -92,9 +88,9 @@ pub trait Block: Default + Debug {
     where
         D: Write + Read + Seek,
     {
-        let block_count = subvol.new_block(fs, device)?;
-        Self::default().sync(device, block_count)?;
-        Ok(block_count)
+        let block_index = subvol.new_block(fs, device)?;
+        Self::default().sync(device, block_index)?;
+        Ok(block_index)
     }
 }
 
@@ -241,26 +237,34 @@ impl BlockGroup {
      * * `start_block`: The first block of the group.
      * * `total_blocks`: Blocks the group can use (including meta block and bitmap block).
      */
-    pub fn create(start_block: u64, total_blocks: u64) -> Self {
+    pub fn create(id: u64, start_block: u64, total_blocks: u64) -> Self {
         const META_BLOCK: u64 = 1;
-        let mut group = BlockGroup {
+
+        let next_group;
+        let capacity;
+        let free_blocks;
+        if total_blocks <= Self::max_blocks() {
+            next_group = 0;
+            capacity = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
+            free_blocks = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
+        } else {
+            next_group = start_block + Self::max_blocks();
+            capacity = 8 * BLOCK_SIZE as u64;
+            free_blocks = 8 * BLOCK_SIZE as u64;
+        }
+
+        BlockGroup {
             meta_block: start_block,
             bitmap_block: start_block + META_BLOCK,
             start_block: start_block + META_BLOCK + BLOCK_MAP_SIZE as u64,
+            meta: BlockGroupMeta {
+                id,
+                next_group,
+                capacity,
+                free_blocks,
+            },
             ..Default::default()
-        };
-
-        if total_blocks <= group.blocks() {
-            group.meta.next_group = 0;
-            group.meta.capacity = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
-            group.meta.free_blocks = total_blocks - META_BLOCK - BLOCK_MAP_SIZE as u64;
-        } else {
-            group.meta.next_group = start_block + group.blocks();
-            group.meta.capacity = 8 * BLOCK_SIZE as u64;
-            group.meta.free_blocks = 8 * BLOCK_SIZE as u64;
         }
-
-        group
     }
     pub fn load<D>(device: &mut D, start_block: u64) -> IOResult<Self>
     where
@@ -305,7 +309,7 @@ impl BlockGroup {
     }
     #[inline]
     /** A full block group occupies N blocks */
-    pub(crate) fn blocks(&self) -> u64 {
+    pub(crate) fn max_blocks() -> u64 {
         const META_BLOCK: u64 = 1;
         META_BLOCK + BLOCK_MAP_SIZE as u64 + 8 * BLOCK_SIZE as u64
     }
@@ -317,7 +321,7 @@ impl BlockGroup {
     #[inline]
     /** Map relative block number into absolute block number */
     pub(crate) fn to_absolute_block(&self, relative_block: u64) -> u64 {
-        self.start_block as u64 + relative_block
+        self.start_block + relative_block
     }
     #[inline]
     /** Range of data blocks */
@@ -350,31 +354,31 @@ impl Block for BitmapBlock {
 
 impl BitmapBlock {
     /** Get if used */
-    pub fn get_used(&self, count: u64) -> bool {
-        let byte = count as usize / 8;
-        let bit = count as usize % 8;
+    pub fn get_used(&self, index: u64) -> bool {
+        let byte = index as usize / 8;
+        let bit = index as usize % 8;
         self.bytes[byte] & (1 << (7 - bit)) != 0
     }
     /** Mark as used */
-    pub fn set_used(&mut self, count: u64) {
-        let byte = count as usize / 8;
-        let bit = count as usize % 8;
+    pub fn set_used(&mut self, index: u64) {
+        let byte = index as usize / 8;
+        let bit = index as usize % 8;
         self.bytes[byte] |= 1 << (7 - bit);
     }
     /** Mark as unused */
-    pub fn set_unused(&mut self, count: u64) {
-        let byte = count as usize / 8;
-        let bit = count as usize % 8;
+    pub fn set_unused(&mut self, index: u64) {
+        let byte = index as usize / 8;
+        let bit = index as usize % 8;
         self.bytes[byte] &= !(1 << (7 - bit));
     }
     /**
      * Find an unmarked bit and return its position.
      */
     pub fn find_unused(&self) -> Option<u64> {
-        for (byte_n, byte) in self.bytes.iter().enumerate() {
-            if *byte != 0xff {
+        for (byte_idx, byte_val) in self.bytes.iter().enumerate() {
+            if *byte_val != 0xff {
                 for bit in 0..8 {
-                    let position = (byte_n * 8 + bit) as u64;
+                    let position = (byte_idx * 8 + bit) as u64;
                     if !self.get_used(position) {
                         return Some(position);
                     }
@@ -399,8 +403,8 @@ impl Block for BitmapIndexBlock {
         };
 
         let bitmaps = &bytes[8..];
-        for (i, block) in block.bitmaps.iter_mut().enumerate() {
-            *block = u64::from_be_bytes(bitmaps[8 * i..8 * (i + 1)].try_into().unwrap());
+        for (i, entry) in block.bitmaps.iter_mut().enumerate() {
+            *entry = u64::from_be_bytes(bitmaps[8 * i..8 * (i + 1)].try_into().unwrap());
         }
 
         block
@@ -410,8 +414,8 @@ impl Block for BitmapIndexBlock {
 
         bytes[..8].copy_from_slice(&self.next.to_be_bytes());
         let bitmaps = &mut bytes[8..];
-        for (i, block) in self.bitmaps.iter().enumerate() {
-            bitmaps[8 * i..8 * (i + 1)].copy_from_slice(&block.to_be_bytes());
+        for (i, entry) in self.bitmaps.iter().enumerate() {
+            bitmaps[8 * i..8 * (i + 1)].copy_from_slice(&entry.to_be_bytes());
         }
 
         bytes
@@ -467,16 +471,16 @@ impl Block for INodeGroup {
 
 impl INodeGroup {
     pub fn is_empty(&self) -> bool {
-        for i in self.inodes {
-            if !i.is_empty_inode() {
+        for inode in &self.inodes {
+            if !inode.is_empty_inode() {
                 return false;
             }
         }
         true
     }
     pub fn is_full(&self) -> bool {
-        for i in self.inodes {
-            if i.is_empty_inode() {
+        for inode in &self.inodes {
+            if inode.is_empty_inode() {
                 return false;
             }
         }
