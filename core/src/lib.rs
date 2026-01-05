@@ -47,7 +47,7 @@ impl Filesystem {
             && block_size - group_start as usize >= BLOCK_GROUP_MINIMAL_SZIE
         {
             let mut group = BlockGroup::create(group_start, block_size as u64 - group_start);
-            group.meta_block.id = group_id;
+            group.meta.id = group_id;
             group_id += 1;
 
             group_start += group.blocks();
@@ -80,7 +80,7 @@ impl Filesystem {
         let mut group_start = 1;
         while group_start > 0 {
             let group = BlockGroup::load(device, group_start)?;
-            group_start = group.meta_block.next_group;
+            group_start = group.meta.next_group;
 
             groups.push(group);
         }

@@ -384,7 +384,7 @@ impl SubvolumeManager {
                             index_block.bitmaps[bitmap_index % index_block.bitmaps.len()],
                         )?;
                         for byte in 0..BLOCK_SIZE {
-                            fs.groups[group].block_map.bytes[byte] &= !bitmap.bytes[byte];
+                            fs.groups[group].bitmap.bytes[byte] &= !bitmap.bytes[byte];
                         }
                         bitmap_index += 1;
                         if bitmap_index % index_block.bitmaps.len() == 0 {

@@ -1,5 +1,5 @@
 use clap::Parser;
-use lib31corefs::{Filesystem, block::BLOCK_SIZE};
+use fs31core::{Filesystem, block::BLOCK_SIZE};
 use std::io::{Result as IOResult, Seek};
 
 #[derive(Parser, Debug)]

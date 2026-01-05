@@ -1,5 +1,5 @@
 [package]
-name = "lib31corefs"
+name = "fs31core"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
@@ -9,4 +9,4 @@ authors = ["31core <31core@tutanota.com>"]
 path = "src/lib.rs"
 
 [dependencies]
-uuid = { version = "1.19", features = ["v4"] }
+uuid.workspace = true

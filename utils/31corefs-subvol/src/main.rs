@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use lib31corefs::{Filesystem, block::BLOCK_SIZE};
+use fs31core::{Filesystem, block::BLOCK_SIZE};
 
 #[derive(Parser)]
 struct Args {
@@ -82,9 +82,12 @@ fn main() -> std::io::Result<()> {
                 println!(
                     "|{:7}|{:20}|{:8}|",
                     id_str,
-                    chrono::DateTime::from_timestamp(entry.creation_date as i64, 0)
-                        .unwrap()
-                        .format("%Y-%m-%d %H:%M:%S"),
+                    chrono::DateTime::from_timestamp(
+                        (entry.creation_date / 1_000_000_000) as i64,
+                        (entry.creation_date % 1_000_000_000) as u32
+                    )
+                    .unwrap()
+                    .format("%Y-%m-%d %H:%M:%S"),
                     to_size_str(entry.real_used_blocks as usize * BLOCK_SIZE),
                 );
                 println!("+{}+{}+{}+", "-".repeat(7), "-".repeat(20), "-".repeat(8));

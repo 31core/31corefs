@@ -1,5 +1,5 @@
 use clap::Parser;
-use lib31corefs::Filesystem;
+use fs31core::Filesystem;
 
 #[derive(Parser, Debug)]
 struct Args {

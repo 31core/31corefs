@@ -8,6 +8,6 @@ name = "31corefs-subvol"
 path = "src/main.rs"
 
 [dependencies]
-chrono = "0.4.42"
-clap = { version = "4.5", features = ["derive"] }
-lib31corefs = { path = "../../lib31corefs" }
+chrono.workspace = true
+clap.workspace = true
+fs31core.workspace = true
