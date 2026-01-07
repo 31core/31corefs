@@ -430,14 +430,14 @@ where
     D: Read + Write + Seek,
 {
     let inode = subvol.get_inode(device, inode_number)?;
-    let new_inode_count = subvol.new_inode(fs, device)?;
+    let new_inode_number = subvol.new_inode(fs, device)?;
     let mut new_inode = INode::default();
 
     clone_by_inode(subvol, device, inode_number)?;
     new_inode.size = inode.size;
     new_inode.btree_root = inode.btree_root;
-    subvol.set_inode(fs, device, new_inode_count, new_inode)?;
-    Ok(new_inode_count)
+    subvol.set_inode(fs, device, new_inode_number, new_inode)?;
+    Ok(new_inode_number)
 }
 
 /** Clone a file, do not allocate inode */

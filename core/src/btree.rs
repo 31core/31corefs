@@ -360,8 +360,6 @@ impl BtreeNode {
                         let mut child_node = Self::load_block(device, self.entries[i].value)?;
                         child_node.block_index = self.entries[i].value;
 
-                        child_node.cow_clone_node(fs, subvol, device)?;
-
                         child_node.modify(fs, subvol, device, key, value)?;
                         self.entries[i].value = child_node.block_index;
                     }
@@ -514,10 +512,10 @@ impl BtreeNode {
         self.sync(device, self.block_index)?;
         Ok(())
     }
-    /** Find pointer by id
+    /** Find pointer by key
      *
      * Return:
-     * 1: block count
+     * 1: btree entry
      */
     pub fn lookup<D>(&self, device: &mut D, key: u64) -> IOResult<BtreeEntry>
     where
@@ -534,14 +532,18 @@ impl BtreeNode {
                         let mut child = Self::load_block(device, self.entries[i].value)?;
                         child.block_index = self.entries[i].value;
 
-                        return child.lookup(device, key);
+                        let mut entry = child.lookup(device, key)?;
+                        entry.rc += self.rc;
+                        return Ok(entry);
                     }
                 }
             }
             BtreeType::Leaf => {
                 for entry in &self.entries {
                     if key == entry.key {
-                        return Ok(*entry);
+                        let mut entry = *entry;
+                        entry.rc += self.rc;
+                        return Ok(entry);
                     }
                 }
             }
@@ -551,7 +553,7 @@ impl BtreeNode {
             format!("No such key '{}'.", key),
         ))
     }
-    fn find_unused_internal<D>(&self, device: &mut D) -> IOResult<(Option<u64>, Option<u64>)>
+    fn _find_unused<D>(&self, device: &mut D) -> IOResult<(Option<u64>, Option<u64>)>
     where
         D: Write + Read + Seek,
     {
@@ -559,7 +561,7 @@ impl BtreeNode {
             for i in 0..self.entries.len() {
                 let mut child = Self::load_block(device, self.entries[i].value)?;
                 child.block_index = self.entries[i].value;
-                let result = child.find_unused_internal(device)?;
+                let result = child._find_unused(device)?;
 
                 if let Some(id) = result.0 {
                     return Ok((Some(id), None));
@@ -587,7 +589,7 @@ impl BtreeNode {
     where
         D: Write + Read + Seek,
     {
-        let result = self.find_unused_internal(device)?;
+        let result = self._find_unused(device)?;
 
         if let Some(id) = result.0 {
             Ok(id)
@@ -660,13 +662,21 @@ impl BtreeNode {
         D: Write + Read + Seek,
     {
         if self.rc > 0 {
-            if let BtreeType::Internal = self.node_type {
-                /* make child nodes inherit rc of parent node */
-                for entry in &mut self.entries {
-                    let mut child_node = Self::load_block(device, entry.value)?;
-                    child_node.block_index = entry.value;
-                    child_node.rc += self.rc;
-                    child_node.sync(device, child_node.block_index)?;
+            match self.node_type {
+                BtreeType::Internal => {
+                    /* make child nodes inherit rc of parent node */
+                    for entry in &mut self.entries {
+                        let mut child_node = Self::load_block(device, entry.value)?;
+                        child_node.block_index = entry.value;
+                        child_node.rc += self.rc;
+                        child_node.sync(device, child_node.block_index)?;
+                    }
+                }
+                BtreeType::Leaf => {
+                    /* make entries inherit rc of parent node */
+                    for entry in &mut self.entries {
+                        entry.rc += self.rc;
+                    }
                 }
             }
 
