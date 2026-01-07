@@ -138,8 +138,8 @@ struct btree_leaf_node {
     uint16_t entry_count;
     uint8_t reserved1;
     uint8_t type;
-    uint32_t reserved2;
-    uint64_t rc;
+    uint32_t rc;
+    uint64_t reserved2;
     struct btree_internal_entry entries[170];
 };
 ```
@@ -151,8 +151,8 @@ struct btree_internal_node {
     uint16_t entry_count;
     uint8_t reserved1;
     uint8_t type;
-    uint32_t reserved2;
-    uint64_t rc;
+    uint32_t rc;
+    uint64_t reserved2;
     struct btree_internal_entry entries[255];
 };
 ```

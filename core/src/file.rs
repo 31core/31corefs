@@ -46,7 +46,7 @@ impl File {
     {
         let btree_root = if inode.btree_root != 0 {
             let mut node = BtreeNode::load_block(device, inode.btree_root)?;
-            node.block_count = inode.btree_root;
+            node.block_index = inode.btree_root;
             Some(node)
         } else {
             None
@@ -100,7 +100,7 @@ impl File {
 
         let btree_root = if inode.btree_root != 0 {
             let mut node = BtreeNode::load_block(device, inode.btree_root)?;
-            node.block_count = inode.btree_root;
+            node.block_index = inode.btree_root;
             Some(node)
         } else {
             None
@@ -131,8 +131,8 @@ impl File {
             None => {
                 self.inode.btree_root = BtreeNode::allocate_on_block_subvol(fs, subvol, device)?;
                 self.btree_root = Some(BtreeNode {
-                    block_count: self.inode.btree_root,
-                    r#type: BtreeType::Leaf,
+                    block_index: self.inode.btree_root,
+                    node_type: BtreeType::Leaf,
                     ..Default::default()
                 });
                 self.btree_root.as_mut().unwrap()
@@ -155,7 +155,7 @@ impl File {
                 if entry.rc > 0 {
                     let new_block = crate::block::block_copy_out(fs, subvol, device, block)?;
                     btree_root.modify(fs, subvol, device, block_number as u64, new_block)?;
-                    self.inode.btree_root = btree_root.block_count;
+                    self.inode.btree_root = btree_root.block_index;
                     save_block(device, new_block, data_block)?;
                 } else {
                     save_block(device, block, data_block)?;
@@ -163,7 +163,7 @@ impl File {
             } else {
                 let data_block_count = subvol.new_block(fs, device)?;
                 btree_root.insert(fs, subvol, device, block_number as u64, data_block_count)?;
-                self.inode.btree_root = btree_root.block_count;
+                self.inode.btree_root = btree_root.block_index;
 
                 let mut block_data = [0; BLOCK_SIZE];
                 block_data[block_offset..block_offset + written_size]
@@ -253,7 +253,7 @@ impl File {
                         btree.remove(fs, subvol, device, i)?;
                     }
                 }
-                self.inode.btree_root = btree.block_count;
+                self.inode.btree_root = btree.block_index;
             } else if size == 0 {
                 btree.destroy(fs, subvol, device)?;
                 self.inode.btree_root = 0;
@@ -361,7 +361,7 @@ impl File {
                 inode_group_count,
                 new_inode_group_block,
             )?;
-            subvol.entry.inode_tree_root = subvol.igroup_mgt_btree.block_count;
+            subvol.entry.inode_tree_root = subvol.igroup_mgt_btree.block_index;
             crate::subvol::SubvolumeManager::set_subvolume(
                 device,
                 fs.sb.subvol_mgr,
@@ -411,7 +411,7 @@ where
         subvol.set_inode(fs, device, inode_number, inode)?;
     } else if inode.btree_root != 0 {
         let mut btree_root = BtreeNode::load_block(device, inode.btree_root)?;
-        btree_root.block_count = inode.btree_root;
+        btree_root.block_index = inode.btree_root;
 
         btree_root.destroy(fs, subvol, device)?;
         subvol.release_inode(fs, device, inode_number)?;
@@ -453,7 +453,7 @@ where
 
     if inode.btree_root != 0 {
         let mut btree_root = BtreeNode::load_block(device, inode.btree_root)?;
-        btree_root.block_count = inode.btree_root;
+        btree_root.block_index = inode.btree_root;
         btree_root.clone_tree(device)?;
     }
     Ok(())

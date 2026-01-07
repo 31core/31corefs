@@ -252,7 +252,7 @@ impl SubvolumeManager {
         for entry in &self.entries {
             if entry.id == id {
                 let mut igroup_mgt_btree = BtreeNode::load_block(device, entry.inode_tree_root)?;
-                igroup_mgt_btree.block_count = entry.inode_tree_root;
+                igroup_mgt_btree.block_index = entry.inode_tree_root;
                 return Ok(Subvolume {
                     entry: *entry,
                     igroup_mgt_btree,
@@ -763,7 +763,7 @@ impl Subvolume {
                 inode_group_count,
                 inode_group_block,
             )?;
-            self.entry.inode_tree_root = self.igroup_mgt_btree.block_count;
+            self.entry.inode_tree_root = self.igroup_mgt_btree.block_index;
 
             SubvolumeManager::set_subvolume(device, fs.sb.subvol_mgr, self.entry.id, self.entry)?;
 
@@ -818,7 +818,7 @@ impl Subvolume {
                 igroup_count,
                 new_inode_group_block,
             )?;
-            self.entry.inode_tree_root = self.igroup_mgt_btree.block_count;
+            self.entry.inode_tree_root = self.igroup_mgt_btree.block_index;
             SubvolumeManager::set_subvolume(device, fs.sb.subvol_mgr, self.entry.id, self.entry)?;
 
             inode_group.sync(device, new_inode_group_block)?;
@@ -930,38 +930,41 @@ impl Subvolume {
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
-        mut count: u64,
+        mut block_index: u64,
     ) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
         let mut index = BitmapIndexBlock::load_block(device, self.entry.bitmap)?;
         loop {
-            if count < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
+            if block_index < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
                 let mut bitmap = BitmapBlock::load_block(
                     device,
-                    index.bitmaps[count as usize / (8 * BLOCK_SIZE)],
+                    index.bitmaps[block_index as usize / (8 * BLOCK_SIZE)],
                 )?;
-                if bitmap.get_used(count % (8 * BLOCK_SIZE as u64)) {
-                    bitmap.set_unused(count % (8 * BLOCK_SIZE as u64));
-                    bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
+                if bitmap.get_used(block_index % (8 * BLOCK_SIZE as u64)) {
+                    bitmap.set_unused(block_index % (8 * BLOCK_SIZE as u64));
+                    bitmap.sync(
+                        device,
+                        index.bitmaps[block_index as usize / (8 * BLOCK_SIZE)],
+                    )?;
 
                     self.entry.real_used_blocks -= 1;
                 } else {
-                    self.release_shared_block(device, count)?;
+                    self.release_shared_block(device, block_index)?;
                 }
                 self.entry.used_blocks -= 1;
 
                 break;
             } else if index.next != 0 {
-                count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
+                block_index -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
                 index = BitmapIndexBlock::load_block(device, index.next)?;
             } else {
                 return Err(Error::other("Unexpected end of linked list."));
             }
         }
 
-        fs.release_block(count);
+        fs.release_block(block_index);
         Ok(())
     }
     /** Synchronize subvolume entry to disk */

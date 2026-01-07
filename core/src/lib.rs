@@ -101,7 +101,7 @@ impl Filesystem {
     pub(crate) fn release_block(&mut self, absolute_block: u64) {
         /* find which block group contains the block */
         let mut group_index = 0;
-        while !(group_index + 1 < self.groups.len()
+        while !(group_index < self.groups.len()
             && self.groups[group_index]
                 .block_range()
                 .contains(&absolute_block))
