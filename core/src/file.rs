@@ -286,7 +286,7 @@ impl File {
         let fd = Self::open(fs, subvol, device, &src)?;
         let inode = copy_by_inode(fs, subvol, device, fd.inode_number)?;
 
-        Directory::open(fs, subvol, device, dir_path(src.as_ref()))?.add_file(
+        Directory::open(fs, subvol, device, dir_path(dst.as_ref()))?.add_file(
             fs,
             subvol,
             device,
