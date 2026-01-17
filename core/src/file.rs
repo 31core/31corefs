@@ -6,7 +6,7 @@ use crate::{
     inode::{ACL_REGULAR_FILE, INODE_PER_GROUP, INode, PERMISSION_BITS},
     subvol::Subvolume,
     symlink::read_link_from_inode,
-    utils::{base_name, dir_path},
+    utils::{base_name, dir_path, get_sys_time},
 };
 use std::{
     io::{Error, ErrorKind, Result as IOResult},
@@ -33,12 +33,12 @@ impl File {
         D: Read + Write + Seek,
         P: AsRef<Path>,
     {
-        let inode_count = create(fs, subvol, device)?;
+        let inode_number = create(fs, subvol, device)?;
 
         let mut dir = Directory::open(fs, subvol, device, dir_path(path.as_ref()))?;
-        dir.add_file(fs, subvol, device, base_name(path.as_ref()), inode_count)?;
+        dir.add_file(fs, subvol, device, base_name(path.as_ref()), inode_number)?;
 
-        Self::open_by_inode(subvol, device, inode_count)
+        Self::open_by_inode(subvol, device, inode_number)
     }
     pub(crate) fn from_inode<D>(device: &mut D, inode_number: u64, inode: INode) -> IOResult<Self>
     where
@@ -335,9 +335,9 @@ impl File {
     where
         D: Read + Write + Seek,
     {
-        let inode_group_count = self.inode_number / INODE_PER_GROUP as u64;
+        let inode_group_index = self.inode_number / INODE_PER_GROUP as u64;
         /* check if the inode is multiple referenced */
-        let btree_query_result = subvol.igroup_mgt_btree.lookup(device, inode_group_count)?;
+        let btree_query_result = subvol.igroup_mgt_btree.lookup(device, inode_group_index)?;
         let inode_group_block = btree_query_result.value;
         if btree_query_result.rc > 0 {
             let mut inode_group = INodeGroup::load(load_block(device, inode_group_block)?);
@@ -358,7 +358,7 @@ impl File {
                 fs,
                 &mut subvol.clone(),
                 device,
-                inode_group_count,
+                inode_group_index,
                 new_inode_group_block,
             )?;
             subvol.entry.inode_tree_root = subvol.igroup_mgt_btree.block_index;
@@ -387,6 +387,9 @@ where
 
     let inode = INode {
         acl: ACL_REGULAR_FILE << PERMISSION_BITS,
+        ctime: get_sys_time(),
+        mtime: get_sys_time(),
+        atime: get_sys_time(),
         ..Default::default()
     };
     subvol.set_inode(fs, device, inode_number, inode)?;

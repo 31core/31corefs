@@ -108,7 +108,6 @@ impl INode {
         self.ctime = get_sys_time();
     }
     pub fn update_mtime(&mut self) {
-        self.update_ctime();
         self.mtime = get_sys_time();
     }
 }

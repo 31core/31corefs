@@ -16,29 +16,29 @@ const SUBVOLUME_ENTRY_SIZE: usize = 128;
 pub const SUBVOLUME_STATE_ALLOCATED: u8 = 1;
 pub const SUBVOLUME_STATE_REMOVED: u8 = 2;
 
-fn new_bitmap<D>(fs: &mut Filesystem, device: &mut D, count: usize) -> IOResult<u64>
+fn new_bitmap<D>(fs: &mut Filesystem, device: &mut D, bitmap_count: usize) -> IOResult<u64>
 where
     D: Write + Read + Seek,
 {
-    let mut index = BitmapIndexBlock::allocate_on_block(fs, device)?;
-    let first_index = index;
+    let mut index_block_idx = BitmapIndexBlock::allocate_on_block(fs, device)?;
+    let first_block = index_block_idx;
 
     let mut index_block = BitmapIndexBlock::default();
-    for i in 0..count {
+    for i in 0..bitmap_count {
         if i > 0 && i % index_block.bitmaps.len() == 0 {
-            let next_index = BitmapIndexBlock::allocate_on_block(fs, device)?;
-            index_block.next = next_index;
-            index_block.sync(device, index)?;
+            let next_block = BitmapIndexBlock::allocate_on_block(fs, device)?;
+            index_block.next = next_block;
+            index_block.sync(device, index_block_idx)?;
             index_block = BitmapIndexBlock::default();
-            index = next_index;
+            index_block_idx = next_block;
         }
 
         index_block.bitmaps[i % index_block.bitmaps.len()] =
             BitmapBlock::allocate_on_block(fs, device)?;
     }
-    index_block.sync(device, index)?;
+    index_block.sync(device, index_block_idx)?;
 
-    Ok(first_index)
+    Ok(first_block)
 }
 
 fn merge_to_shared_bitmap<D>(device: &mut D, bitmap: u64, total_bitmap: u64) -> IOResult<()>
@@ -224,13 +224,13 @@ impl Block for SubvolumeManager {
 
 impl SubvolumeManager {
     /** Generate ID for a new subvolume */
-    fn generate_new_id<D>(device: &mut D, mut mgr_block_count: u64) -> IOResult<u64>
+    fn generate_new_id<D>(device: &mut D, mut mgr_block_index: u64) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
         let mut max_id = 0; // the maxium entry ID + 1 in previous block
         loop {
-            let mgr = Self::load_block(device, mgr_block_count)?;
+            let mgr = Self::load_block(device, mgr_block_index)?;
 
             if mgr.next == 0 {
                 return match mgr.entries.last() {
@@ -241,7 +241,7 @@ impl SubvolumeManager {
                 if let Some(entry) = mgr.entries.last() {
                     max_id = entry.id + 1;
                 }
-                mgr_block_count = mgr.next;
+                mgr_block_index = mgr.next;
             }
         }
     }
@@ -267,20 +267,20 @@ impl SubvolumeManager {
     /** Get a subvolume */
     pub fn get_subvolume<D>(
         device: &mut D,
-        mut mgr_block_count: u64,
+        mut mgr_block_index: u64,
         id: u64,
     ) -> IOResult<Subvolume>
     where
         D: Write + Read + Seek,
     {
         loop {
-            let mgr = Self::load_block(device, mgr_block_count)?;
+            let mgr = Self::load_block(device, mgr_block_index)?;
 
             match mgr.get_subvol_internal(device, id) {
                 Ok(subvol) => return Ok(subvol),
                 Err(err) => {
                     if mgr.next != 0 {
-                        mgr_block_count = mgr.next;
+                        mgr_block_index = mgr.next;
                     } else {
                         return Err(err);
                     }
@@ -291,7 +291,7 @@ impl SubvolumeManager {
     /** Set subvolume sntry */
     pub fn set_subvolume<D>(
         device: &mut D,
-        mut mgr_block_count: u64,
+        mut mgr_block_index: u64,
         id: u64,
         entry: SubvolumeEntry,
     ) -> IOResult<()>
@@ -299,18 +299,18 @@ impl SubvolumeManager {
         D: Write + Read + Seek,
     {
         loop {
-            let mut mgr = Self::load_block(device, mgr_block_count)?;
+            let mut mgr = Self::load_block(device, mgr_block_index)?;
 
             for (i, this_entry) in mgr.entries.iter().enumerate() {
                 if this_entry.id == id {
                     mgr.entries[i] = entry;
-                    mgr.sync(device, mgr_block_count)?;
+                    mgr.sync(device, mgr_block_index)?;
                     return Ok(());
                 }
             }
 
             if mgr.next != 0 {
-                mgr_block_count = mgr.next;
+                mgr_block_index = mgr.next;
             } else {
                 return Err(Error::new(
                     ErrorKind::NotFound,
@@ -324,9 +324,9 @@ impl SubvolumeManager {
     where
         D: Write + Read + Seek,
     {
-        let mut mgr_block_count = fs.sb.subvol_mgr;
+        let mut mgr_block_index = fs.sb.subvol_mgr;
         loop {
-            let mut mgr = Self::load_block(device, mgr_block_count)?;
+            let mut mgr = Self::load_block(device, mgr_block_index)?;
             if mgr.next == 0 {
                 if mgr.entries.len() < SUBVOLUMES {
                     let entry = SubvolumeEntry {
@@ -341,7 +341,7 @@ impl SubvolumeManager {
                     };
                     let subvol_id = entry.id;
                     mgr.entries.push(entry);
-                    mgr.sync(device, mgr_block_count)?;
+                    mgr.sync(device, mgr_block_index)?;
 
                     let mut subvol = Self::get_subvolume(device, fs.sb.subvol_mgr, subvol_id)?;
                     crate::dir::create(fs, &mut subvol, device)?;
@@ -349,11 +349,11 @@ impl SubvolumeManager {
                 } else {
                     let new_mgr_id = SubvolumeManager::allocate_on_block(fs, device)?;
                     mgr.next = new_mgr_id;
-                    mgr.sync(device, mgr_block_count)?;
-                    mgr_block_count = new_mgr_id;
+                    mgr.sync(device, mgr_block_index)?;
+                    mgr_block_index = new_mgr_id;
                 }
             } else {
-                mgr_block_count = mgr.next;
+                mgr_block_index = mgr.next;
             }
         }
     }
@@ -362,9 +362,9 @@ impl SubvolumeManager {
     where
         D: Write + Read + Seek,
     {
-        let mut mgr_block_count = fs.sb.subvol_mgr;
+        let mut mgr_block_index = fs.sb.subvol_mgr;
         loop {
-            let mut mgr = Self::load_block(device, mgr_block_count)?;
+            let mut mgr = Self::load_block(device, mgr_block_index)?;
 
             for (i, subvol) in mgr.entries.iter_mut().enumerate() {
                 if subvol.id == id {
@@ -420,7 +420,7 @@ impl SubvolumeManager {
                         mgr.entries.remove(i);
                     }
 
-                    mgr.sync(device, mgr_block_count)?;
+                    mgr.sync(device, mgr_block_index)?;
                     return Ok(());
                 }
             }
@@ -431,7 +431,7 @@ impl SubvolumeManager {
                     format!("No such subvolume '{id}'"),
                 ));
             } else {
-                mgr_block_count = mgr.next;
+                mgr_block_index = mgr.next;
             }
         }
     }
@@ -474,14 +474,14 @@ impl SubvolumeManager {
     /** List submolumes */
     pub fn list_subvols<D>(
         device: &mut D,
-        mut mgr_block_count: u64,
+        mut mgr_block_index: u64,
     ) -> IOResult<Vec<SubvolumeEntry>>
     where
         D: Read + Write + Seek,
     {
         let mut ids = Vec::new();
         loop {
-            let mgr = Self::load_block(device, mgr_block_count)?;
+            let mgr = Self::load_block(device, mgr_block_index)?;
 
             for this_entry in &mgr.entries {
                 if this_entry.state != SUBVOLUME_STATE_REMOVED {
@@ -490,7 +490,7 @@ impl SubvolumeManager {
             }
 
             if mgr.next != 0 {
-                mgr_block_count = mgr.next;
+                mgr_block_index = mgr.next;
             } else {
                 break;
             }
@@ -547,20 +547,24 @@ impl Block for IGroupBitmap {
 
 impl IGroupBitmap {
     /** Get if a inode group is vailable */
-    pub fn get_available<D>(device: &mut D, mut allocator_count: u64, count: u64) -> IOResult<bool>
+    pub fn get_available<D>(
+        device: &mut D,
+        mut allocator_block_index: u64,
+        index: u64,
+    ) -> IOResult<bool>
     where
         D: Write + Read + Seek,
     {
-        let mut byte = count as usize / 8;
-        let bit = count as usize % 8;
+        let mut byte = index as usize / 8;
+        let bit = index as usize % 8;
         loop {
-            let allocator = IGroupBitmap::load_block(device, allocator_count)?;
+            let allocator = IGroupBitmap::load_block(device, allocator_block_index)?;
 
             if byte < allocator.bitmap_data.len() {
                 return Ok(allocator.bitmap_data[byte] & (1 << (7 - bit)) != 0);
             } else if allocator.next != 0 {
                 byte -= allocator.bitmap_data.len();
-                allocator_count = allocator.next;
+                allocator_block_index = allocator.next;
             } else {
                 return Err(Error::other("Unexpected end of linked list."));
             }
@@ -571,42 +575,42 @@ impl IGroupBitmap {
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        count: u64,
+        index: u64,
     ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
-        let mut allocator_count = subvol.entry.igroup_bitmap;
-        let mut byte = count as usize / 8;
-        let bit = count as usize % 8;
+        let mut allocator_blk_idx = subvol.entry.igroup_bitmap;
+        let mut byte = index as usize / 8;
+        let bit = index as usize % 8;
 
-        let mut last_allocator_count = None;
+        let mut last_allocator_blk_idx = None;
         loop {
-            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
+            let mut allocator = IGroupBitmap::load_block(device, allocator_blk_idx)?;
 
             if allocator.rc > 0 {
                 allocator.rc -= 1;
-                allocator.sync(device, allocator_count)?;
-                allocator_count = subvol.new_block(fs, device)?;
+                allocator.sync(device, allocator_blk_idx)?;
+                allocator_blk_idx = subvol.new_block(fs, device)?;
                 allocator.rc = 0;
 
-                if let Some(last_allocator_count) = last_allocator_count {
+                if let Some(last_allocator_blk_idx) = last_allocator_blk_idx {
                     let mut last_allocator =
-                        IGroupBitmap::load_block(device, last_allocator_count)?;
-                    last_allocator.next = allocator_count;
-                    last_allocator.sync(device, last_allocator_count)?;
+                        IGroupBitmap::load_block(device, last_allocator_blk_idx)?;
+                    last_allocator.next = allocator_blk_idx;
+                    last_allocator.sync(device, last_allocator_blk_idx)?;
                 }
             }
 
             if byte < allocator.bitmap_data.len() {
                 allocator.bitmap_data[byte] |= 1 << (7 - bit);
-                allocator.sync(device, allocator_count)?;
+                allocator.sync(device, allocator_blk_idx)?;
                 return Ok(());
             } else if allocator.next != 0 {
                 byte -= allocator.bitmap_data.len();
 
-                last_allocator_count = Some(allocator_count);
-                allocator_count = allocator.next;
+                last_allocator_blk_idx = Some(allocator_blk_idx);
+                allocator_blk_idx = allocator.next;
             } else {
                 return Err(Error::other("Unexpected end of linked list."));
             }
@@ -617,59 +621,59 @@ impl IGroupBitmap {
         fs: &mut Filesystem,
         subvol: &mut Subvolume,
         device: &mut D,
-        count: u64,
+        index: u64,
     ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
-        let mut allocator_count = subvol.entry.igroup_bitmap;
-        let mut byte = count as usize / 8;
-        let bit = count as usize % 8;
+        let mut allocator_blk_idx = subvol.entry.igroup_bitmap;
+        let mut byte = index as usize / 8;
+        let bit = index as usize % 8;
 
-        let mut last_allocator_count = None;
+        let mut last_allocator_blk_idx = None;
         loop {
-            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
+            let mut allocator = IGroupBitmap::load_block(device, allocator_blk_idx)?;
 
             if allocator.rc > 0 {
                 allocator.rc -= 1;
-                allocator.sync(device, allocator_count)?;
-                allocator_count = subvol.new_block(fs, device)?;
+                allocator.sync(device, allocator_blk_idx)?;
+                allocator_blk_idx = subvol.new_block(fs, device)?;
                 allocator.rc = 0;
 
-                if let Some(last_allocator_count) = last_allocator_count {
+                if let Some(last_allocator_blk_idx) = last_allocator_blk_idx {
                     let mut last_allocator =
-                        IGroupBitmap::load_block(device, last_allocator_count)?;
-                    last_allocator.next = allocator_count;
-                    last_allocator.sync(device, last_allocator_count)?;
+                        IGroupBitmap::load_block(device, last_allocator_blk_idx)?;
+                    last_allocator.next = allocator_blk_idx;
+                    last_allocator.sync(device, last_allocator_blk_idx)?;
                 }
             }
 
             if byte < allocator.bitmap_data.len() {
                 allocator.bitmap_data[byte] &= !(1 << (7 - bit));
-                allocator.sync(device, allocator_count)?;
+                allocator.sync(device, allocator_blk_idx)?;
                 return Ok(());
             } else if allocator.next != 0 {
                 byte -= allocator.bitmap_data.len();
 
-                last_allocator_count = Some(allocator_count);
-                allocator_count = allocator.next;
+                last_allocator_blk_idx = Some(allocator_blk_idx);
+                allocator_blk_idx = allocator.next;
             } else {
                 return Err(Error::other("Unexpected end of linked list."));
             }
         }
     }
-    pub fn find_available<D>(device: &mut D, mut allocator_count: u64) -> IOResult<u64>
+    pub fn find_available<D>(device: &mut D, mut allocator_block_index: u64) -> IOResult<u64>
     where
         D: Write + Read + Seek,
     {
         loop {
-            let allocator = IGroupBitmap::load_block(device, allocator_count)?;
+            let allocator = IGroupBitmap::load_block(device, allocator_block_index)?;
 
             for (i, byte) in allocator.bitmap_data.iter().enumerate() {
                 if *byte != 0 {
                     for j in 0..8 {
                         let position = (i * 8 + j) as u64;
-                        if IGroupBitmap::get_available(device, allocator_count, position)? {
+                        if IGroupBitmap::get_available(device, allocator_block_index, position)? {
                             return Ok(position);
                         }
                     }
@@ -677,27 +681,27 @@ impl IGroupBitmap {
             }
 
             if allocator.next != 0 {
-                allocator_count = allocator.next;
+                allocator_block_index = allocator.next;
             } else {
                 return Err(Error::other("Unexpected end of linked list."));
             }
         }
     }
     /** Recursively clone blocks */
-    pub fn clone_blocks<D>(device: &mut D, mut allocator_count: u64) -> IOResult<()>
+    pub fn clone_blocks<D>(device: &mut D, mut allocator_block_index: u64) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
         loop {
-            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
+            let mut allocator = IGroupBitmap::load_block(device, allocator_block_index)?;
 
             allocator.rc += 1;
-            allocator.sync(device, allocator_count)?;
+            allocator.sync(device, allocator_block_index)?;
 
             if allocator.next == 0 {
                 return Ok(());
             } else {
-                allocator_count = allocator.next;
+                allocator_block_index = allocator.next;
             }
         }
     }
@@ -705,25 +709,25 @@ impl IGroupBitmap {
     pub fn destroy_blocks<D>(
         fs: &mut Filesystem,
         device: &mut D,
-        mut allocator_count: u64,
+        mut allocator_block_index: u64,
     ) -> IOResult<()>
     where
         D: Write + Read + Seek,
     {
         loop {
-            let mut allocator = IGroupBitmap::load_block(device, allocator_count)?;
+            let mut allocator = IGroupBitmap::load_block(device, allocator_block_index)?;
 
             if allocator.rc > 0 {
                 allocator.rc -= 1;
-                allocator.sync(device, allocator_count)?;
+                allocator.sync(device, allocator_block_index)?;
             } else {
-                fs.release_block(allocator_count);
+                fs.release_block(allocator_block_index);
             }
 
             if allocator.next == 0 {
                 return Ok(());
             } else {
-                allocator_count = allocator.next;
+                allocator_block_index = allocator.next;
             }
         }
     }
@@ -741,46 +745,46 @@ impl Subvolume {
         D: Write + Read + Seek,
     {
         if let Ok(inode_group) = IGroupBitmap::find_available(device, self.entry.igroup_bitmap) {
-            let inode_block_count = self.igroup_mgt_btree.lookup(device, inode_group)?.value;
-            let group = INodeGroup::load_block(device, inode_block_count)?;
+            let inode_block_index = self.igroup_mgt_btree.lookup(device, inode_group)?.value;
+            let group = INodeGroup::load_block(device, inode_block_index)?;
 
-            let mut inode_count = 0;
+            let mut inode_number = 0;
             for (i, inode) in group.inodes.iter().enumerate() {
                 if inode.is_empty_inode() {
-                    inode_count = INODE_PER_GROUP as u64 * inode_group + i as u64;
+                    inode_number = INODE_PER_GROUP as u64 * inode_group + i as u64;
                     break;
                 }
             }
 
-            Ok(inode_count)
+            Ok(inode_number)
         } else {
             let inode_group_block = INodeGroup::allocate_on_block(fs, device)?;
-            let inode_group_count = self.igroup_mgt_btree.find_unused(device)?;
+            let inode_group_index = self.igroup_mgt_btree.find_unused(device)?;
             self.igroup_mgt_btree.insert(
                 fs,
                 &mut self.clone(),
                 device,
-                inode_group_count,
+                inode_group_index,
                 inode_group_block,
             )?;
             self.entry.inode_tree_root = self.igroup_mgt_btree.block_index;
 
             SubvolumeManager::set_subvolume(device, fs.sb.subvol_mgr, self.entry.id, self.entry)?;
 
-            IGroupBitmap::set_available(fs, self, device, inode_group_count)?;
+            IGroupBitmap::set_available(fs, self, device, inode_group_index)?;
 
-            Ok(inode_group_count * INODE_PER_GROUP as u64)
+            Ok(inode_group_index * INODE_PER_GROUP as u64)
         }
     }
-    pub fn get_inode<D>(&self, device: &mut D, inode: u64) -> IOResult<INode>
+    pub fn get_inode<D>(&self, device: &mut D, inode_number: u64) -> IOResult<INode>
     where
         D: Read + Write + Seek,
     {
-        let inode_group_count = inode / INODE_PER_GROUP as u64;
-        let inode_num = inode as usize % INODE_PER_GROUP;
+        let inode_group_index = inode_number / INODE_PER_GROUP as u64;
+        let inode_num = inode_number as usize % INODE_PER_GROUP;
         let inode_group_block = self
             .igroup_mgt_btree
-            .lookup(device, inode_group_count)?
+            .lookup(device, inode_group_index)?
             .value;
 
         let inode_group = INodeGroup::load_block(device, inode_group_block)?;
@@ -790,23 +794,23 @@ impl Subvolume {
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
-        inode_count: u64,
+        inode_number: u64,
         inode: INode,
     ) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        let igroup_count = inode_count / INODE_PER_GROUP as u64;
-        let igroup_offset = inode_count as usize % INODE_PER_GROUP;
+        let igroup_index = inode_number / INODE_PER_GROUP as u64;
+        let igroup_offset = inode_number as usize % INODE_PER_GROUP;
 
-        let btree_query_result = self.igroup_mgt_btree.lookup(device, igroup_count)?;
+        let btree_query_result = self.igroup_mgt_btree.lookup(device, igroup_index)?;
         let inode_group_block = btree_query_result.value;
 
         let mut inode_group = INodeGroup::load_block(device, inode_group_block)?;
         inode_group.inodes[igroup_offset] = inode;
 
         if inode_group.is_full() {
-            IGroupBitmap::set_unavailable(fs, self, device, igroup_count)?;
+            IGroupBitmap::set_unavailable(fs, self, device, igroup_index)?;
         }
 
         if btree_query_result.rc > 0 {
@@ -815,7 +819,7 @@ impl Subvolume {
                 fs,
                 &mut self.clone(),
                 device,
-                igroup_count,
+                igroup_index,
                 new_inode_group_block,
             )?;
             self.entry.inode_tree_root = self.igroup_mgt_btree.block_index;
@@ -827,7 +831,7 @@ impl Subvolume {
                     crate::file::clone_by_inode(
                         self,
                         device,
-                        igroup_count * INODE_PER_GROUP as u64 + i as u64,
+                        igroup_index * INODE_PER_GROUP as u64 + i as u64,
                     )?;
                 }
             }
@@ -841,15 +845,15 @@ impl Subvolume {
         &mut self,
         fs: &mut Filesystem,
         device: &mut D,
-        inode: u64,
+        inode_number: u64,
     ) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
-        let inode_group_count = inode / INODE_PER_GROUP as u64;
-        let btree_query_result = self.igroup_mgt_btree.lookup(device, inode_group_count)?;
+        let inode_group_index = inode_number / INODE_PER_GROUP as u64;
+        let btree_query_result = self.igroup_mgt_btree.lookup(device, inode_group_index)?;
         let inode_group_block = btree_query_result.value;
-        self.set_inode(fs, device, inode, INode::empty())?;
+        self.set_inode(fs, device, inode_number, INode::empty())?;
 
         let inode_group = INodeGroup::load_block(device, inode_group_block)?;
 
@@ -857,7 +861,7 @@ impl Subvolume {
         if inode_group.is_empty() {
             IGroupBitmap::set_unavailable(fs, self, device, inode_group_block)?;
             self.igroup_mgt_btree
-                .remove(fs, &mut self.clone(), device, inode_group_count)?;
+                .remove(fs, &mut self.clone(), device, inode_group_index)?;
             fs.release_block(inode_group_block);
             fs.sync_meta_data(device)?;
         }
@@ -868,55 +872,57 @@ impl Subvolume {
     where
         D: Read + Write + Seek,
     {
-        let count_orig = fs.new_block()?;
+        let block_index = fs.new_block()?;
         self.entry.used_blocks += 1;
         self.entry.real_used_blocks += 1;
-        let mut count = count_orig;
 
         let mut index = BitmapIndexBlock::load_block(device, self.entry.bitmap)?;
+
+        let mut i = block_index;
         loop {
-            if count < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
-                let mut bitmap = BitmapBlock::load_block(
-                    device,
-                    index.bitmaps[count as usize / (8 * BLOCK_SIZE)],
-                )?;
-                bitmap.set_used(count % (8 * BLOCK_SIZE as u64));
-                bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
+            if i < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
+                let mut bitmap =
+                    BitmapBlock::load_block(device, index.bitmaps[i as usize / (8 * BLOCK_SIZE)])?;
+                bitmap.set_used(i % (8 * BLOCK_SIZE as u64));
+                bitmap.sync(device, index.bitmaps[i as usize / (8 * BLOCK_SIZE)])?;
                 break;
             } else if index.next != 0 {
-                count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
+                i -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
                 index = BitmapIndexBlock::load_block(device, index.next)?;
             } else {
                 return Err(Error::other("Unexpected end of linked list."));
             }
         }
 
-        Ok(count_orig)
+        Ok(block_index)
     }
     /** Release a data block from shared_bitmap */
-    fn release_shared_block<D>(&mut self, device: &mut D, mut count: u64) -> IOResult<()>
+    fn release_shared_block<D>(&mut self, device: &mut D, mut block_index: u64) -> IOResult<()>
     where
         D: Read + Write + Seek,
     {
         let mut index = BitmapIndexBlock::load_block(device, self.entry.shared_bitmap)?;
         loop {
-            if count < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
+            if block_index < (index.bitmaps.len() * BLOCK_SIZE * 8) as u64 {
                 let mut bitmap = BitmapBlock::load_block(
                     device,
-                    index.bitmaps[count as usize / (8 * BLOCK_SIZE)],
+                    index.bitmaps[block_index as usize / (8 * BLOCK_SIZE)],
                 )?;
-                if bitmap.get_used(count % (8 * BLOCK_SIZE as u64)) {
-                    bitmap.set_unused(count % (8 * BLOCK_SIZE as u64));
-                    bitmap.sync(device, index.bitmaps[count as usize / (8 * BLOCK_SIZE)])?;
+                if bitmap.get_used(block_index % (8 * BLOCK_SIZE as u64)) {
+                    bitmap.set_unused(block_index % (8 * BLOCK_SIZE as u64));
+                    bitmap.sync(
+                        device,
+                        index.bitmaps[block_index as usize / (8 * BLOCK_SIZE)],
+                    )?;
                     self.entry.real_used_blocks -= 1;
                 } else {
                     SubvolumeManager::get_subvolume(device, 0, self.entry.parent_subvol)?
-                        .release_shared_block(device, count)?;
+                        .release_shared_block(device, block_index)?;
                 }
 
                 break;
             } else if index.next != 0 {
-                count -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
+                block_index -= (index.bitmaps.len() * BLOCK_SIZE * 8) as u64;
                 index = BitmapIndexBlock::load_block(device, index.next)?;
             } else {
                 return Err(Error::other("Unexpected end of linked list."));
