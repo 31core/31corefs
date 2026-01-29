@@ -3,12 +3,13 @@ use crate::{block::BLOCK_SIZE, utils::get_sys_time};
 pub const INODE_SIZE: usize = 64;
 pub const INODE_PER_GROUP: usize = BLOCK_SIZE / INODE_SIZE;
 
-pub const ACL_REGULAR_FILE: u16 = 0x1;
-pub const ACL_DIRECTORY: u16 = 0x2;
-pub const ACL_SYMBOLLINK: u16 = 0x4;
-pub const ACL_CHAR: u16 = 0x8;
-pub const ACL_BLOCK: u16 = 0x10;
-pub const ACL_EMPTY: u16 = 0xffff;
+pub const ITYPE_REGULAR_FILE: u16 = 0x1;
+pub const ITYPE_DIRECTORY: u16 = 0x2;
+pub const ITYPE_SYMBOLLINK: u16 = 0x4;
+pub const ITYPE_CHAR: u16 = 0x8;
+pub const ITYPE_BLOCK: u16 = 0x10;
+
+pub const TYPE_ACL_EMPTY: u16 = 0xffff;
 
 pub const PERMISSION_BITS: usize = 9;
 
@@ -20,7 +21,7 @@ pub const PERMISSION_BITS: usize = 9;
  *
  * |Start|End|Description|
  * |-----|---|-----------|
- * |0    |2  |ACL        |
+ * |0    |2  |Type and ACL|
  * |2    |3  |UID        |
  * |4    |6  |GID        |
  * |6    |14 |atime      |
@@ -32,7 +33,7 @@ pub const PERMISSION_BITS: usize = 9;
  * |48   |64 |Reserved   |
  */
 pub struct INode {
-    pub acl: u16,
+    pub type_acl: u16,
     pub uid: u16,
     pub gid: u16,
     pub atime: u64,
@@ -46,14 +47,14 @@ pub struct INode {
 impl INode {
     pub fn empty() -> Self {
         Self {
-            acl: ACL_EMPTY,
+            type_acl: TYPE_ACL_EMPTY,
             ..Default::default()
         }
     }
     /** Load from bytes */
     pub fn load(bytes: [u8; INODE_SIZE]) -> Self {
         Self {
-            acl: u16::from_be_bytes(bytes[..2].try_into().unwrap()),
+            type_acl: u16::from_be_bytes(bytes[..2].try_into().unwrap()),
             uid: u16::from_be_bytes(bytes[2..4].try_into().unwrap()),
             gid: u16::from_be_bytes(bytes[4..6].try_into().unwrap()),
             atime: u64::from_be_bytes(bytes[6..14].try_into().unwrap()),
@@ -68,7 +69,7 @@ impl INode {
     pub fn dump(&self) -> [u8; INODE_SIZE] {
         let mut inode_bytes = [0; INODE_SIZE];
 
-        inode_bytes[..2].copy_from_slice(&self.acl.to_be_bytes());
+        inode_bytes[..2].copy_from_slice(&self.type_acl.to_be_bytes());
         inode_bytes[2..4].copy_from_slice(&self.uid.to_be_bytes());
         inode_bytes[4..6].copy_from_slice(&self.gid.to_be_bytes());
         inode_bytes[6..14].copy_from_slice(&self.atime.to_be_bytes());
@@ -81,25 +82,25 @@ impl INode {
         inode_bytes
     }
     pub fn acl_type(&self) -> u16 {
-        self.acl >> PERMISSION_BITS
+        self.type_acl >> PERMISSION_BITS
     }
     pub fn is_dir(&self) -> bool {
-        self.acl_type() == ACL_DIRECTORY
+        self.acl_type() == ITYPE_DIRECTORY
     }
     pub fn is_symlink(&self) -> bool {
-        self.acl_type() == ACL_SYMBOLLINK
+        self.acl_type() == ITYPE_SYMBOLLINK
     }
     pub fn is_file(&self) -> bool {
-        self.acl_type() == ACL_REGULAR_FILE
+        self.acl_type() == ITYPE_REGULAR_FILE
     }
     pub fn is_char(&self) -> bool {
-        self.acl_type() == ACL_CHAR
+        self.acl_type() == ITYPE_CHAR
     }
     pub fn is_block(&self) -> bool {
-        self.acl_type() == ACL_BLOCK
+        self.acl_type() == ITYPE_BLOCK
     }
     pub fn is_empty_inode(&self) -> bool {
-        self.acl == ACL_EMPTY
+        self.type_acl == TYPE_ACL_EMPTY
     }
     pub fn update_atime(&mut self) {
         self.atime = get_sys_time();

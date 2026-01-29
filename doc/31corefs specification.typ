@@ -12,10 +12,13 @@
 #align(center)[#text(17pt)[*31corefs specification*]]
 
 #align(center)[
-  Author: 31core \
-  Email: #link("mailto:31core@tutanota.com") \
-  Version: 1.0-dev
-]
+  #table(columns: 2,
+  stroke: none,
+  align: left,
+  [Author:], [31core],
+  [Email:], link("mailto:31core@tutanota.com"),
+  [Version:], [1.0-dev],
+)]
 
 #outline(depth: 1)
 
@@ -30,12 +33,15 @@ Supported features:
 - Case-sentitive
 
 = Definitions
-*Global constants*
+== Global constants
 
 #table(columns: 2,
   [*Constant*], [*Description*],
   [`BLOCK_SIZE`], [Unit size of blocks, currently supports 4096 block size.]
 )
+
+== Byte order
+All multi-byte integer fields are stored in Big Endian byte order.
 
 = Super block
 The super block is the first block of the physical device, it records metadata describing the filesystem.
@@ -108,15 +114,14 @@ Traverse block groups to find a block group where `block_group_meta.free_blocks`
 
 = B-Tree
 == B-Tree entry
+31corefs defines a generic B-Tree that is used to mapping a unique 64 bit unsigned integer to another, with Copy-on-Write support, which is uesd in data block management and inode group management.
 
-31corefs defines a generic B-Tree that is used to mapping a unique 64 bit unsigned integer to another, with CoW support, which is uesd in data block management and inode group management.
-
-Leaf node entry takes 24 bytes, with a reference counter (rc),
+Leaf node entry takes 20 bytes, with a reference counter (rc),
 ```c
 struct btree_leaf_entry {
     uint64_t key;
     uint64_t value;
-    uint64_t rc;
+    uint32_t rc;
 };
 ```
 
@@ -129,8 +134,7 @@ struct btree_internal_entry {
 ```
 
 == B-Tree node
-
-A leaf B-Tree node contains 170 leaf entries.
+A leaf B-Tree node contains 204 leaf entries.
 
 *Definition*
 ```c
@@ -140,7 +144,7 @@ struct btree_leaf_node {
     uint8_t type;
     uint32_t rc;
     uint64_t reserved2;
-    struct btree_internal_entry entries[170];
+    struct btree_internal_entry entries[204];
 };
 ```
 
@@ -157,16 +161,17 @@ struct btree_internal_node {
 };
 ```
 
-A B-Tree node (both internal and leaf) is stored in a block, its `rc` value means how many times did the block referenced, clone step must be performed before modification when `rc` is greater than `0`.
-
-B-Tree type definitions:
+*B-Tree type definitions*
 #table(columns: 2,
   [*Constant*], [*Value*],
   [`BTREE_NODE_TYPE_INTERNAL`], [`0xf0`],
   [`BTREE_NODE_TYPE_LEAF`], [`0x0f`],
 )
 
-= Inode
+A B-Tree node (both internal and leaf) is stored in a block, its `rc` value means how many times did the block referenced, clone step must be performed before modification when `rc` is greater than `0`.
+
+= Inode & Inode group
+== Inode 
 Inode records the metadata of a file.
 
 Each inode takes 64 bytes, and its data structure is as follow.
@@ -174,7 +179,7 @@ Each inode takes 64 bytes, and its data structure is as follow.
 *Definition*
 ```c
 struct inode {
-    uint16_t permission;
+    uint16_t type_acl;
     uint16_t uid;
     uint16_t gid;
     uint64_t atime;
@@ -190,42 +195,69 @@ struct inode {
 #table(
   columns: 2,
   [*Field*], [*Description*],
-  [`acl`], [POSIX ACL],
+  [`type_acl`], [Inode type and POSIX ACL],
   [`uid`], [UID of owner],
   [`gid`], [GID of owner],
   [`atime`], [Last access time (unit: nano sec)],
   [`ctime`], [Last change time (unit: nano sec)],
   [`mtime`], [Last modify time (unit: nano sec)],
   [`hlinks`], [Count of hard links],
-  [`size`], [File size],
+  [`size`], [File size (unit: byte)],
   [`btree_root`], [Root B-Tree node block of content management]
 )
 
 *Empty inode*
 
-An empty Inode always has `acl` valued `0xffff`.
+An empty Inode always has `type_acl` valued `0xffff`.
 
-*ACLs*
+*Type_ACL*
 
 #table(
   columns: (4 * 7%, 4 * 9%),
-  stroke: 0.5pt,
-  [File type (7 bits)], [Permission (9 bits)]
+  stroke: (x, y) => if y == 0 {
+    if x == 0 {
+      (top: 0.5pt, left: 0.5pt)
+    } else {
+      (top: 0.5pt, right: 0.5pt)
+    }
+  } else {
+    (0.5pt)
+  },
+  [#sym.arrow.l High],
+  table.cell(align: right)[Low #sym.arrow.r],
+  [Type (7 bits)], [ACL (9 bits)]
 )
 
 *File type*
 
-- `ACL_RUGULAR_FILE`: `0x1`
-- `ACL_DIRECTORY`: `0x2`
-- `ACL_SYMBOLLINK`: `0x4`
-- `ACL_CHAR`: `0x8`
-- `ACL_BLOCK`: `0x10`
+#table(columns: 2,
+  [*Constant*], [*Value*],
+  [`ITYPE_REGULAR_FILE`], [`0x1`],
+  [`ITYPE_DIRECTORY`], [`0x2`],
+  [`ITYPE_SYMBOLLINK`], [`0x4`],
+  [`ITYPE_CHAR`], [`0x8`],
+  [`ITYPE_BLOCK`], [`0x10`],
+)
 
-*Permission*
+*ACL*
 
 #table(
   columns: 9,
-  stroke: 0.5pt,
+  stroke: (x, y) => if y == 0 {
+    if x == 0 {
+      (top: 0.5pt, left: 0.5pt)
+    } else if x == 6 {
+      (top: 0.5pt, right: 0.5pt)
+    } else {
+      (top: 0.5pt)
+    }
+  } else {
+    (0.5pt)
+  },
+  /* Description of low and high bits */
+  table.cell(colspan: 3)[#sym.arrow.l High],
+  table.cell(colspan: 3)[],
+  table.cell(colspan: 3, align: right)[Low #sym.arrow.r],
   table.cell(colspan: 3)[Owner],
   table.cell(colspan: 3)[Group],
   table.cell(colspan: 3)[Other],
@@ -236,7 +268,7 @@ An empty Inode always has `acl` valued `0xffff`.
 31corefs store a group of inodes (called "inode group") in a block, a group contains 64 inodes
 
 === Inode index
-Given inode group $g$ (indexing from `0`) and the $x$st (indexing from `0`) inodes in the group, the inode number $i$ should be:
+Given inode group $g$ (indexing from `0`) and the $x$st (indexing from `0`) inodes in the group, the absolute inode number $i$ could be calculated:
 
 $ i = 64 times g + x $
 

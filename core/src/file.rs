@@ -3,7 +3,7 @@ use crate::{
     block::{BLOCK_SIZE, Block, INodeGroup, load_block, save_block},
     btree::{BtreeNode, BtreeType},
     dir::Directory,
-    inode::{ACL_REGULAR_FILE, INODE_PER_GROUP, INode, PERMISSION_BITS},
+    inode::{INODE_PER_GROUP, INode, ITYPE_REGULAR_FILE, PERMISSION_BITS},
     subvol::Subvolume,
     symlink::read_link_from_inode,
     utils::{base_name, dir_path, get_sys_time},
@@ -386,7 +386,7 @@ where
     let inode_number = subvol.new_inode(fs, device)?;
 
     let inode = INode {
-        acl: ACL_REGULAR_FILE << PERMISSION_BITS,
+        type_acl: ITYPE_REGULAR_FILE << PERMISSION_BITS,
         ctime: get_sys_time(),
         mtime: get_sys_time(),
         atime: get_sys_time(),

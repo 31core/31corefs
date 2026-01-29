@@ -1,7 +1,7 @@
 use crate::{
     Filesystem,
     file::File,
-    inode::{ACL_DIRECTORY, INode, PERMISSION_BITS},
+    inode::{INode, ITYPE_DIRECTORY, PERMISSION_BITS},
     subvol::Subvolume,
     symlink::read_link_from_inode,
     utils::{base_name, dir_path},
@@ -266,7 +266,7 @@ where
 {
     let inode_number = crate::file::create(fs, subvol, device)?;
     let mut inode = subvol.get_inode(device, inode_number)?;
-    inode.acl = ACL_DIRECTORY << PERMISSION_BITS;
+    inode.type_acl = ITYPE_DIRECTORY << PERMISSION_BITS;
     subvol.set_inode(fs, device, inode_number, inode)?;
     Ok(inode_number)
 }
