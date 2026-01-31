@@ -23,10 +23,10 @@
 #outline(depth: 1)
 
 = Introduction
-31corefs is a modern, cross-platform filesystem. It supports advanced features like subvolume management, snapshot and CoW.
+31corefs is a modern, cross-platform filesystem. It supports advanced features like subvolume management, snapshot and Copy-on-Write.
 
 Supported features:
-- Copy on Write
+- Copy-on-Write
 - Sparse file
 - Subvolume and snapshot
 - POSIX ACLs
@@ -70,7 +70,13 @@ struct super_block {
   [`magic_header`], [Pre-defined as `[0x31, 0xc0, 0x8e, 0xf5]`.],
   [`version`], [`0x01` for version 1.],
   [`uuid`], [Recommend to use UUIDv4.],
-  [`label`], [A regular C string that ends with `NULL` character which can be ASCII or UTF-8 charset.]
+  [`label`], [A regular C string that ends with `NULL` character which can be in ASCII or UTF-8 charset.],
+  [`total_blocks`], [Total number of blocks in the filesystem.],
+  [`used_blocks`], [Number of blocks allocated.],
+  [`real_used_blocks`], [Number of blocks actually used by data.],
+  [`default_subvol`], [The default subvolume ID.],
+  [`subvol_mgr`], [Block number of the subvolume manager block.],
+  [`creation_time`], [Creation time of the filesystem (unit: nano sec).],
 )
 
 = Block allocator
@@ -86,7 +92,7 @@ The whole filesystem is divided into several block groups, each block group is a
 )]
 
 == Meta block
-Meta block records some information of a block group.
+The meta block stores a structure that describes the state of its block group.
 
 *Definition*
 ```c
@@ -102,19 +108,21 @@ struct block_group_meta {
   columns: 2,
   [*Field*], [*Description*],
   [`id`], [Block group ID, starting from `0`.],
-  [`next_group`], [Block of the next block group, for the last block group it would be `0`.],
-  [`capacity`], [Number of data blocks.],
-  [`free_blocks`], [Number of free data blocks.],
+  [`next_group`], [Physical block address of the next block group. A value of `0` marks the last group in the chain.],
+  [`capacity`], [Total number of data blocks in the group.],
+  [`free_blocks`], [Current count of unallocated data blocks in the group.],
 )
 
-*Note:* Block group loading *must* follows `next_group` in `block_group_meta` instead of hard coded block number.
+*Note:* Block group loading *must* follows `next_group` in `block_group_meta`, never assume a fixed block number for the next group.
 
 == Block allocation
 Traverse block groups to find a block group where `block_group_meta.free_blocks` is greater than `0`, and then traverse bits in the bitmap block to find a free block. And then mark the bit to 1, decrease `block_group_meta.free_blocks` by 1, finally returns the block number.
 
 = B-Tree
+31corefs defines a generic B-Tree for mapping a unique 64 bit unsigned integer to another, with copy-on-write support, which is mainly uesd in data block management and inode group management.
+
 == B-Tree entry
-31corefs defines a generic B-Tree that is used to mapping a unique 64 bit unsigned integer to another, with Copy-on-Write support, which is uesd in data block management and inode group management.
+B-Tree entry is a key-value pair stored in B-Tree nodes. It has two types: leaf entry and internal entry.
 
 Leaf node entry takes 20 bytes, with a reference counter (rc),
 ```c
@@ -168,7 +176,20 @@ struct btree_internal_node {
   [`BTREE_NODE_TYPE_LEAF`], [`0x0f`],
 )
 
-A B-Tree node (both internal and leaf) is stored in a block, its `rc` value means how many times did the block referenced, clone step must be performed before modification when `rc` is greater than `0`.
+A B-Tree node (both internal and leaf) is stored in a block, its `rc` value means how many times did the block referenced, clone step must be performed before modification when `rc` is greater than `0` (see @btree-cow).
+
+== B-Tree clone
+Simply increase the `rc` value of the root B-Tree node by `1` when cloning a B-Tree.
+
+== B-Tree copy-on-write <btree-cow>
+When modifying a B-Tree node (insertion, deletion, or update), if the node's reference count (`rc`) is greater than `0`, perform a copy-on-write operation. This involves creating a new copy of the node, plusing its child nodes' `rc` to the node's `rc`, setting the original node's `rc` to `0`, and updating the parent node to point to the new copy. This ensures that other references to the original node remain unaffected by the modification.
+
+
+== B-Tree insertion
+To insert a key-value pair into a B-Tree, traverse from the root node to find the leaf node that should contain the key. If the leaf node has space, insert the entry directly. If the leaf node is full, split the node into two nodes and promote the middle key to the parent node. If the parent node is also full, repeat the splitting process up to the root. If the root node is split, create a new root node.
+
+== B-Tree deletion
+To delete a key-value pair from a B-Tree, traverse from the root node to find the leaf node that contains the key. Remove the entry from the leaf node. If the leaf node has entries less than $T - 1$ ($T$ refers to degree, 128 for internal node and 102 for leaf node), try to merge the leaf node with a sibling node. If merging is not possible, borrow an entry from a sibling node. If the parent node has entries less than $T - 1$, repeat the borrowing or merging process up to the root. If the root node has no entries, make its only child the new root.
 
 = Inode & Inode group
 == Inode 

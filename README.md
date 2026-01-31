@@ -10,10 +10,14 @@
 * POSIX ACLs
 * Case-sentitive
 
-## lib31corefs
+## Source tree structure
 
-Core library to access 31corefs, without any platform-related code.
+|Directory|Description|
+|---------|-----------|
+|core     |Core library to access 31corefs, without any platform-related code.|
+|doc      |Secification written in typst.|
+|utils    |Utilities for managing 31corefs such as `mkfs`, `dump`, ...|
 
 ## Bugs & Reports
 
-You can report a bug or share your ideas by email `31core@tutanota.com`.
+Please report a bug or share your ideas by email `31core@tutanota.com`.

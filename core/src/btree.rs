@@ -10,6 +10,8 @@ use std::{
 
 const MAX_INTERNAL_COUNT: usize = (BLOCK_SIZE - ENTRY_START) / ENTRY_INTERNAL_SIZE;
 const MAX_LEAF_COUNT: usize = (BLOCK_SIZE - ENTRY_START) / ENTRY_LEAF_SIZE;
+const LEAF_T: usize = MAX_LEAF_COUNT.div_ceil(2);
+const INTERNAL_T: usize = MAX_INTERNAL_COUNT.div_ceil(2);
 const ENTRY_LEAF_SIZE: usize = 2 * 8 + 4;
 const ENTRY_INTERNAL_SIZE: usize = 2 * 8;
 const ENTRY_START: usize = 16;
@@ -423,76 +425,81 @@ impl BtreeNode {
                         child_node._remove(fs, subvol, device, key)?;
                         self.entries[i].value = child_node.block_index;
 
-                        /* child nodes can be merged into previous or next node */
+                        /* child nodes has entries lass than T - 1 */
                         if child_node.node_type == BtreeType::Internal
-                            && child_node.entries.len() < MAX_INTERNAL_COUNT / 2
+                            && child_node.entries.len() < INTERNAL_T - 1
                             || child_node.node_type == BtreeType::Leaf
-                                && child_node.entries.len() < MAX_LEAF_COUNT / 2
+                                && child_node.entries.len() < LEAF_T - 1
                         {
+                            /* not the first node */
                             if i > 0 {
-                                let mut previous_node =
+                                let mut left_node =
                                     Self::load_block(device, self.entries[i - 1].value)?;
-                                previous_node.block_index = self.entries[i - 1].value;
+                                left_node.block_index = self.entries[i - 1].value;
 
-                                previous_node.cow_clone_node(fs, subvol, device)?;
-                                self.entries[i - 1].value = previous_node.block_index;
+                                left_node.cow_clone_node(fs, subvol, device)?;
+                                self.entries[i - 1].value = left_node.block_index;
 
-                                /* merge this child node into previous node */
+                                /* merge this child node into left sibling node */
                                 if child_node.node_type == BtreeType::Internal
-                                    && previous_node.entries.len() + child_node.entries.len()
+                                    && left_node.entries.len() + child_node.entries.len()
                                         <= MAX_INTERNAL_COUNT
                                     || child_node.node_type == BtreeType::Leaf
-                                        && previous_node.entries.len() + child_node.entries.len()
+                                        && left_node.entries.len() + child_node.entries.len()
                                             <= MAX_LEAF_COUNT
                                 {
                                     for child_entry in child_node.entries.iter() {
-                                        previous_node.entries.push(*child_entry);
+                                        left_node.entries.push(*child_entry);
                                     }
 
                                     child_node.cow_release_node(fs, subvol, device)?;
                                     self.entries.remove(i);
                                 } else {
-                                    let id = previous_node.entries.last().unwrap().key;
-                                    child_node
-                                        .entries
-                                        .insert(0, previous_node.entries.pop().unwrap());
+                                    /* borrow an entry from sibling node */
+                                    let borrowed_entry = left_node.entries.pop().unwrap();
+                                    child_node.entries.insert(0, borrowed_entry);
                                     child_node.sync(device, child_node.block_index)?;
-                                    self.entries[i].key = id;
+                                    self.entries[i].key = borrowed_entry.key;
                                 }
-                                previous_node.sync(device, previous_node.block_index)?;
-                            } else if i < self.entries.len() - 1 {
-                                let mut next_node =
+                                left_node.sync(device, left_node.block_index)?;
+                            }
+                            /* not the last node */
+                            else if i < self.entries.len() - 1 {
+                                let mut right_node =
                                     Self::load_block(device, self.entries[i + 1].value)?;
-                                next_node.block_index = self.entries[i + 1].value;
+                                right_node.block_index = self.entries[i + 1].value;
 
-                                next_node.cow_clone_node(fs, subvol, device)?;
-                                self.entries[i + 1].value = next_node.block_index;
+                                right_node.cow_clone_node(fs, subvol, device)?;
+                                self.entries[i + 1].value = right_node.block_index;
 
-                                /* merge this child node into next node */
+                                /* merge this child node into right sibling node */
                                 if child_node.node_type == BtreeType::Internal
-                                    && next_node.entries.len() + child_node.entries.len()
+                                    && right_node.entries.len() + child_node.entries.len()
                                         <= MAX_INTERNAL_COUNT
                                     || child_node.node_type == BtreeType::Leaf
-                                        && next_node.entries.len() + child_node.entries.len()
+                                        && right_node.entries.len() + child_node.entries.len()
                                             <= MAX_LEAF_COUNT
                                 {
                                     for child_entry in child_node.entries.iter().rev() {
-                                        next_node.entries.insert(0, *child_entry);
+                                        right_node.entries.insert(0, *child_entry);
                                     }
                                     self.entries[i + 1].key =
-                                        next_node.entries.first().unwrap().key;
+                                        right_node.entries.first().unwrap().key;
 
                                     child_node.cow_release_node(fs, subvol, device)?;
 
                                     self.entries.remove(i);
                                 } else {
-                                    next_node.entries.remove(0);
-                                    child_node.entries.push(*next_node.entries.first().unwrap());
+                                    /* borrow an entry from sibling node */
+                                    child_node
+                                        .entries
+                                        .push(*right_node.entries.first().unwrap());
                                     child_node.sync(device, child_node.block_index)?;
+                                    right_node.entries.remove(0);
                                     self.entries[i + 1].key =
-                                        next_node.entries.first().unwrap().key;
+                                        right_node.entries.first().unwrap().key;
                                 }
-                                next_node.sync(device, next_node.block_index)?;
+                                right_node.sync(device, right_node.block_index)?;
                             }
                         }
                         break;
